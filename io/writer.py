@@ -1,23 +1,33 @@
-import struct
+
+from io.format import ORBITHeader, BlockHeader, write_file_header, write_block_header
+
 
 
 class BinaryWriter:
-    _HEADER_FORMAT = "<IHIH"
-    _RESERVED = 0
-
     def __init__(self, filepath: str) -> None:
         self.filepath = filepath
+        self._fh = None
+
+    def open_file(self, n_blocks: int, block_size: int) -> None:
+        self._fh = open(self.filepath, "wb")
+        write_file_header(self._fh, n_blocks, block_size)
+
+    def close_file(self) -> None:
+        if self._fh:
+            self._fh.close()
+            self._fh = None
 
     def write_block(self, compressed_data: bytes, codec_id: int, block_id: int) -> None:
-        data_length = len(compressed_data)
-        header = struct.pack(
-            self._HEADER_FORMAT,
-            block_id,
-            codec_id,
-            data_length,
-            self._RESERVED,
+        if self._fh is None:
+            raise RuntimeError("File not opened. Call open_file() first.")
+        header = BlockHeader(
+            block_id=block_id,
+            codec_id=codec_id,
+            original_size=None,  # Placeholder, must be set by caller if needed
+            compressed_size=len(compressed_data),
         )
-
-        with open(self.filepath, "ab") as fh:
-            fh.write(header)
-            fh.write(compressed_data)
+        # If original_size is not set, fallback to compressed_size
+        if header.original_size is None:
+            header.original_size = header.compressed_size
+        write_block_header(self._fh, header)
+        self._fh.write(compressed_data)
