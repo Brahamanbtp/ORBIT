@@ -1,0 +1,4 @@
+block_size: 4096
+n_actions: 4
+alpha: 1.0
+feature_dim: 3
