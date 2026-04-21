@@ -7,6 +7,34 @@ from core.interfaces import BanditPolicy
 
 
 class PolicyLogger:
+        self._weight_snapshots: dict[int, dict[int, list[float]]] = {}  # block_id -> {action: weight_vector}
+        def log_weight_snapshot(self, block_id: int) -> None:
+            """
+            For each action, extract the weight vector as A_inv @ b from the wrapped LinUCB instance and store as a dict keyed by block_id.
+            """
+            # Only works if wrapped policy has A and b attributes (LinUCB)
+            policy = self.policy
+            if not (hasattr(policy, "A") and hasattr(policy, "b")):
+                return
+            import numpy as np
+            snapshot = {}
+            for action in range(getattr(policy, "n_actions", len(policy.A))):
+                try:
+                    A_inv = np.linalg.inv(policy.A[action])
+                    b = policy.b[action]
+                    theta = (A_inv @ b).tolist()
+                    snapshot[action] = theta
+                except Exception:
+                    snapshot[action] = None
+            self._weight_snapshots[block_id] = snapshot
+
+        def dump_weight_snapshots(self, path: str) -> None:
+            """
+            Write all weight snapshots as JSONL, one per block_id.
+            """
+            with open(path, "w", encoding="utf-8") as fh:
+                for block_id, weights in sorted(self._weight_snapshots.items()):
+                    fh.write(json.dumps({"block_id": block_id, "weights": weights}) + "\n")
     def __init__(self, policy: BanditPolicy) -> None:
         self.policy = policy
         self.log: list[dict[str, Any]] = []
@@ -70,7 +98,14 @@ class PolicyLogger:
         return getattr(self.policy, name)
 
     def select_action(self, features) -> int:
-        return self.policy.select_action(features)
+        # Call wrapped select_action
+        action = self.policy.select_action(features)
+        # Try to get block_id from features
+        block_id = getattr(features, "block_id", None)
+        # Log snapshot every 50 blocks (if block_id is int)
+        if block_id is not None and isinstance(block_id, int) and block_id % 50 == 0:
+            self.log_weight_snapshot(block_id)
+        return action
 
     def update(self, features, action, reward) -> None:
         block_id = getattr(features, "block_id", None)
