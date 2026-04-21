@@ -8,6 +8,9 @@ from evaluation.metrics import aggregate_block_results
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
     os.makedirs(output_dir, exist_ok=True)
+    if getattr(config, "random_seed", None) is not None:
+        import numpy as np
+        np.random.seed(config.random_seed)
     # 1. Run ORBIT pipeline
     compressor = ORBITCompressor(config, None, None, None)  # User must provide extractor, policy, action_space
     # For demonstration, skip actual run if components are missing
