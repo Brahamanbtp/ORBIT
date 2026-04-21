@@ -21,25 +21,30 @@ def compress_block(block, codec_id: int) -> tuple[bytes, float]:
 
 
 
-def process_block(block, router, policy, writer) -> dict:
+
+def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     from utils.timing import TimingContext
 
     # Feature extraction timing
     with TimingContext("feature_extraction") as t_feat:
-        # router.route calls extractor.extract and policy.select_action
-        # We'll split timing for feature extraction and bandit decision
         features = router.extractor.extract(block)
     feature_extraction_ms = t_feat.elapsed_ms
+    if timing_acc is not None:
+        timing_acc.record(block.block_id, "feature_extraction", feature_extraction_ms)
 
     # Bandit decision timing
     with TimingContext("bandit_decision") as t_bandit:
         action_id = policy.select_action(features)
     bandit_decision_ms = t_bandit.elapsed_ms
+    if timing_acc is not None:
+        timing_acc.record(block.block_id, "bandit_decision", bandit_decision_ms)
 
     # Compression timing
     with TimingContext("compression") as t_comp:
         compressed_bytes, _ = compress_block(block, action_id)
     compression_ms = t_comp.elapsed_ms
+    if timing_acc is not None:
+        timing_acc.record(block.block_id, "compression", compression_ms)
 
     reward = compute_reward(len(block.data), len(compressed_bytes), compression_ms)
     policy.update(features, action_id, reward)
