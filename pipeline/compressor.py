@@ -20,10 +20,28 @@ def compress_block(block, codec_id: int) -> tuple[bytes, float]:
     return compressed_bytes, elapsed_ms
 
 
+
 def process_block(block, router, policy, writer) -> dict:
-    action_id, features = router.route(block)
-    compressed_bytes, elapsed_ms = compress_block(block, action_id)
-    reward = compute_reward(len(block.data), len(compressed_bytes), elapsed_ms)
+    from utils.timing import TimingContext
+
+    # Feature extraction timing
+    with TimingContext("feature_extraction") as t_feat:
+        # router.route calls extractor.extract and policy.select_action
+        # We'll split timing for feature extraction and bandit decision
+        features = router.extractor.extract(block)
+    feature_extraction_ms = t_feat.elapsed_ms
+
+    # Bandit decision timing
+    with TimingContext("bandit_decision") as t_bandit:
+        action_id = policy.select_action(features)
+    bandit_decision_ms = t_bandit.elapsed_ms
+
+    # Compression timing
+    with TimingContext("compression") as t_comp:
+        compressed_bytes, _ = compress_block(block, action_id)
+    compression_ms = t_comp.elapsed_ms
+
+    reward = compute_reward(len(block.data), len(compressed_bytes), compression_ms)
     policy.update(features, action_id, reward)
     writer.write_block(compressed_bytes, action_id, block.block_id)
     return {
@@ -32,6 +50,9 @@ def process_block(block, router, policy, writer) -> dict:
         "reward": reward,
         "original_size": len(block.data),
         "compressed_size": len(compressed_bytes),
+        "feature_extraction_ms": feature_extraction_ms,
+        "bandit_decision_ms": bandit_decision_ms,
+        "compression_ms": compression_ms,
     }
 
 
