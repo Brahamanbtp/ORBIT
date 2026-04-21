@@ -76,3 +76,21 @@ def plot_codec_distribution(results: list[dict], output_path: str) -> None:
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
+
+
+def compute_overhead_breakdown(timing_log: list[dict]) -> dict:
+    import numpy as np
+    feature = np.array([d["feature_ms"] for d in timing_log], dtype=float)
+    bandit = np.array([d["bandit_ms"] for d in timing_log], dtype=float)
+    compress = np.array([d["compress_ms"] for d in timing_log], dtype=float)
+    total = feature + bandit + compress
+    overhead_ratio = np.where(total > 0, (feature + bandit) / total, 0.0)
+    return {
+        "feature_mean": float(np.mean(feature)),
+        "feature_std": float(np.std(feature)),
+        "bandit_mean": float(np.mean(bandit)),
+        "bandit_std": float(np.std(bandit)),
+        "compress_mean": float(np.mean(compress)),
+        "compress_std": float(np.std(compress)),
+        "overhead_ratio": overhead_ratio.tolist(),
+    }
