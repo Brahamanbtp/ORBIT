@@ -7,6 +7,36 @@ from core.interfaces import BanditPolicy
 
 
 class PolicyLogger:
+    def __init__(self, policy: BanditPolicy) -> None:
+        self.policy = policy
+        self.log: list[dict[str, Any]] = []
+        self._oracle_actions: dict[int, int] = {}  # block_id -> oracle_action
+        self._oracle_rewards: dict[int, float] = {}  # block_id -> oracle_reward
+
+    def record_oracle_action(self, block_id: int, oracle_action: int, oracle_reward: float = None) -> None:
+        """
+        Record the oracle action (and optionally reward) for a given block_id.
+        """
+        self._oracle_actions[block_id] = oracle_action
+        if oracle_reward is not None:
+            self._oracle_rewards[block_id] = oracle_reward
+
+    def compute_cumulative_regret(self) -> list[float]:
+        """
+        Compute cumulative regret: sum of (oracle_reward - actual_reward) for each block in log order.
+        If oracle_reward is not available, regret is 0 for that block.
+        Returns a list of cumulative regret values (one per block).
+        """
+        cumulative = []
+        total = 0.0
+        for entry in self.log:
+            block_id = entry.get("block_id")
+            actual_reward = entry.get("reward", 0.0)
+            oracle_reward = self._oracle_rewards.get(block_id, None)
+            regret = (oracle_reward - actual_reward) if oracle_reward is not None else 0.0
+            total += regret
+            cumulative.append(total)
+        return cumulative
         def compute_convergence_stats(self) -> dict:
             import math
             window = 50
@@ -34,9 +64,7 @@ class PolicyLogger:
                 "action_entropy_over_time": action_entropy_over_time,
                 "rolling_mean_reward": rolling_mean_reward,
             }
-    def __init__(self, policy: BanditPolicy) -> None:
-        self.policy = policy
-        self.log: list[dict[str, Any]] = []
+    # ...existing code...
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self.policy, name)
