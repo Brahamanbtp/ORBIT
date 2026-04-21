@@ -1,3 +1,31 @@
+def compute_overhead_breakdown_from_accumulator(timing_records: list[dict]) -> dict:
+    """
+    Accepts output from TimingAccumulator.to_dataframe().
+    Computes per-phase mean, std, percent of total time, and dominant_phase.
+    """
+    import numpy as np
+    if not timing_records:
+        return {}
+    # Group by label
+    phase_times = {}
+    for rec in timing_records:
+        label = rec["label"]
+        phase_times.setdefault(label, []).append(rec["elapsed_ms"])
+    # Compute mean, std per phase
+    stats = {}
+    total_time = sum(sum(times) for times in phase_times.values())
+    for label, times in phase_times.items():
+        arr = np.array(times, dtype=float)
+        stats[label] = {
+            "mean": float(np.mean(arr)),
+            "std": float(np.std(arr)),
+            "total": float(np.sum(arr)),
+            "percent": float(np.sum(arr)) / total_time * 100 if total_time > 0 else 0.0,
+        }
+    # Find dominant phase
+    dominant_phase = max(stats.items(), key=lambda x: x[1]["total"])[0] if stats else None
+    stats["dominant_phase"] = dominant_phase
+    return stats
 def compression_ratio(original: int, compressed: int) -> float:
     if original == 0:
         return 0.0
