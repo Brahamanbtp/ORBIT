@@ -16,10 +16,21 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
         headers = []
         block_data_pairs = []
         from io.format import BlockHeader  # ensure import for type
+        from codecs import CODEC_REGISTRY
         with open(input_path, "rb") as infile:
             file_header = read_file_header(infile)
             if file_header.magic != ORBIT_MAGIC:
                 raise ValueError(f"Invalid ORBIT magic bytes: {file_header.magic!r}")
+            # Validate codec_registry_checksum
+            current_checksum = 0
+            for k in CODEC_REGISTRY.keys():
+                current_checksum ^= k
+            if getattr(file_header, "codec_registry_checksum", None) is not None:
+                if file_header.codec_registry_checksum != current_checksum:
+                    raise ValueError(
+                        f"Codec registry checksum mismatch: file={file_header.codec_registry_checksum}, current={current_checksum}. "
+                        f"This indicates a codec registry change or incompatibility."
+                    )
             for _ in range(file_header.n_blocks):
                 block_header = read_block_header(infile)
                 headers.append(block_header)
