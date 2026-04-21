@@ -13,12 +13,12 @@ class LinUCB(BanditPolicy):
         self.alpha = alpha
         self.burn_in_blocks = burn_in_blocks
         self._call_count = 0
+        if random_seed is not None:
+            np.random.seed(random_seed)
         if feature_extractor is not None:
             if hasattr(feature_extractor, "feature_dim"):
                 if feature_extractor.feature_dim != feature_dim:
                     raise ValueError(f"FeatureExtractor feature_dim ({feature_extractor.feature_dim}) does not match LinUCB feature_dim ({feature_dim})")
-        if random_seed is not None:
-            np.random.seed(random_seed)
         self.A = np.array([np.eye(feature_dim, dtype=float) for _ in range(n_actions)])
         self.b = np.zeros((n_actions, feature_dim), dtype=float)
 

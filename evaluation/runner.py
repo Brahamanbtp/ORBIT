@@ -65,10 +65,12 @@ from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
+    import random
     os.makedirs(output_dir, exist_ok=True)
     if getattr(config, "random_seed", None) is not None:
         import numpy as np
         np.random.seed(config.random_seed)
+        random.seed(config.random_seed)
 
     from bandit.linucb import LinUCB
     from bandit.policy import PolicyLogger
