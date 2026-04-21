@@ -65,12 +65,69 @@ from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
+
     import random
+    import sys
+    import importlib
+    import datetime
+    import numpy as np
     os.makedirs(output_dir, exist_ok=True)
     if getattr(config, "random_seed", None) is not None:
-        import numpy as np
         np.random.seed(config.random_seed)
         random.seed(config.random_seed)
+
+    # --- Write reproducibility_manifest.json before pipeline runs ---
+    # ORBIT version from pyproject.toml
+    orbit_version = None
+    try:
+        import toml
+        with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "r", encoding="utf-8") as f:
+            pyproject = toml.load(f)
+            orbit_version = pyproject.get("project", {}).get("version", None)
+    except Exception:
+        orbit_version = None
+
+    # Codec library versions
+    def get_version_safe(pkg):
+        try:
+            mod = importlib.import_module(pkg)
+            return getattr(mod, "__version__", "unknown")
+        except Exception:
+            return None
+    lz4_version = get_version_safe("lz4")
+    zstd_version = get_version_safe("zstandard")
+    try:
+        import lzma
+        lzma_version = sys.version.split()[0]  # stdlib, use Python version
+    except Exception:
+        lzma_version = None
+    numpy_version = np.__version__
+
+    # Dataset file path and size
+    dataset_path = input_path
+    try:
+        dataset_size = os.path.getsize(dataset_path)
+    except Exception:
+        dataset_size = None
+
+    # Timestamp
+    timestamp = datetime.datetime.now().isoformat()
+
+    manifest = {
+        "config": dict(config.__dict__),
+        "orbit_version": orbit_version,
+        "codec_versions": {
+            "lz4": lz4_version,
+            "zstd": zstd_version,
+            "lzma": lzma_version,
+        },
+        "numpy_version": numpy_version,
+        "dataset_path": dataset_path,
+        "dataset_size_bytes": dataset_size,
+        "timestamp": timestamp,
+    }
+    with open(os.path.join(output_dir, "reproducibility_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
 
     from bandit.linucb import LinUCB
     from bandit.policy import PolicyLogger
