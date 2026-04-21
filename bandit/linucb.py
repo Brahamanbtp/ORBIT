@@ -4,11 +4,16 @@ from core.interfaces import BanditPolicy
 
 
 
+
 class LinUCB(BanditPolicy):
-    def __init__(self, n_actions: int, feature_dim: int, alpha: float, random_seed=None) -> None:
+    def __init__(self, n_actions: int, feature_dim: int, alpha: float, random_seed=None, feature_extractor=None) -> None:
         self.n_actions = n_actions
         self.feature_dim = feature_dim
         self.alpha = alpha
+        if feature_extractor is not None:
+            if hasattr(feature_extractor, "feature_dim"):
+                if feature_extractor.feature_dim != feature_dim:
+                    raise ValueError(f"FeatureExtractor feature_dim ({feature_extractor.feature_dim}) does not match LinUCB feature_dim ({feature_dim})")
         if random_seed is not None:
             np.random.seed(random_seed)
         self.A = np.array([np.eye(feature_dim, dtype=float) for _ in range(n_actions)])

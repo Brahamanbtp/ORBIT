@@ -27,6 +27,10 @@ class BlockFeatureExtractor(FeatureExtractor):
     def feature_names(self) -> list[str]:
         return list(self._feature_names)
 
+    @property
+    def feature_dim(self) -> int:
+        return len(self._feature_names)
+
     def extract(self, block: Block) -> np.ndarray:
         values = [self._ALL_FEATURES[name](block.data) for name in self._feature_names]
         return np.array(values, dtype=float)

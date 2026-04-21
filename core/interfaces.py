@@ -6,7 +6,14 @@ import numpy as np
 from core.block import Block
 
 
+
 class FeatureExtractor(ABC):
+    @property
+    @abstractmethod
+    def feature_dim(self) -> int:
+        """Return the feature vector dimension."""
+        ...
+
     @abstractmethod
     def extract(self, block: Block) -> np.ndarray:
         ...
