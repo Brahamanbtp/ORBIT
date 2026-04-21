@@ -31,11 +31,20 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
                         f"Codec registry checksum mismatch: file={file_header.codec_registry_checksum}, current={current_checksum}. "
                         f"This indicates a codec registry change or incompatibility."
                     )
+            # Use block_size from header for validation only
+            header_block_size = getattr(file_header, "block_size", None)
             for _ in range(file_header.n_blocks):
                 block_header = read_block_header(infile)
+                if block_header.compressed_size <= 0:
+                    raise AssertionError(f"BlockHeader for block_id={block_header.block_id} has non-positive compressed_size: {block_header.compressed_size}")
                 headers.append(block_header)
                 compressed_data = infile.read(block_header.compressed_size)
                 block_data_pairs.append((block_header, compressed_data))
+            # Optionally, validate block sizes (internal check, not enforced)
+            if header_block_size is not None:
+                for bh in headers:
+                    if bh.original_size > header_block_size:
+                        raise ValueError(f"BlockHeader original_size {bh.original_size} exceeds header block_size {header_block_size} for block_id={bh.block_id}")
         self._validate_block_order(headers)
         block_data_pairs.sort(key=lambda pair: pair[0].block_id)
         with open(output_path, "wb") as outfile:
