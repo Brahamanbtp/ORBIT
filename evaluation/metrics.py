@@ -48,3 +48,31 @@ def aggregate_block_results(results: list[dict]) -> dict:
         "total_original_bytes": total_original,
         "total_compressed_bytes": total_compressed,
     }
+
+
+def plot_codec_distribution(results: list[dict], output_path: str) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError as exc:
+        raise ImportError("matplotlib is required for plotting. Install with 'pip install matplotlib'.") from exc
+
+    # Count codec selections
+    codec_selection_counts = {}
+    for r in results:
+        cid = r["action_id"]
+        codec_selection_counts[cid] = codec_selection_counts.get(cid, 0) + 1
+
+    if not codec_selection_counts:
+        raise ValueError("No codec selection data to plot.")
+
+    labels = list(codec_selection_counts.keys())
+    counts = [codec_selection_counts[k] for k in labels]
+
+    plt.figure(figsize=(6, 4))
+    plt.bar(labels, counts, color="skyblue")
+    plt.xlabel("Codec ID")
+    plt.ylabel("Selection Count")
+    plt.title("Codec Selection Distribution")
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
