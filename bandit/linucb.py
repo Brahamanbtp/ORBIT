@@ -3,11 +3,14 @@ import numpy as np
 from core.interfaces import BanditPolicy
 
 
+
 class LinUCB(BanditPolicy):
-    def __init__(self, n_actions: int, feature_dim: int, alpha: float) -> None:
+    def __init__(self, n_actions: int, feature_dim: int, alpha: float, random_seed=None) -> None:
         self.n_actions = n_actions
         self.feature_dim = feature_dim
         self.alpha = alpha
+        if random_seed is not None:
+            np.random.seed(random_seed)
         self.A = np.array([np.eye(feature_dim, dtype=float) for _ in range(n_actions)])
         self.b = np.zeros((n_actions, feature_dim), dtype=float)
 
