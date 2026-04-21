@@ -13,8 +13,8 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
         return True
 
     def decompress_file(self, input_path: str, output_path: str) -> None:
-        blocks = {}
         headers = []
+        block_data_pairs = []
         from io.format import BlockHeader  # ensure import for type
         with open(input_path, "rb") as infile:
             file_header = read_file_header(infile)
@@ -24,10 +24,11 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
                 block_header = read_block_header(infile)
                 headers.append(block_header)
                 compressed_data = infile.read(block_header.compressed_size)
+                block_data_pairs.append((block_header, compressed_data))
+        self._validate_block_order(headers)
+        block_data_pairs.sort(key=lambda pair: pair[0].block_id)
+        with open(output_path, "wb") as outfile:
+            for block_header, compressed_data in block_data_pairs:
                 codec = get_codec(block_header.codec_id)
                 data = codec.decompress(compressed_data)
-                blocks[block_header.block_id] = data
-        self._validate_block_order(headers)
-        with open(output_path, "wb") as outfile:
-            for block_id in sorted(blocks):
-                outfile.write(blocks[block_id])
+                outfile.write(data)
