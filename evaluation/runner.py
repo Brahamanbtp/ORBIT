@@ -144,11 +144,12 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     action_space = ActionSpace([k for k in CODEC_REGISTRY.keys()])
     compressor = ORBITCompressor(config, extractor, logger, action_space)
 
-    # Read all blocks for oracle
+
+    # Read all blocks for pipeline and oracle (single pass)
     reader = StreamingReader(input_path, config.block_size)
     blocks = list(split_into_blocks(reader, config.block_size))
 
-    # Compute oracle actions
+    # Compute oracle actions using the same block list
     oracle_actions = compute_oracle_actions(blocks, CODEC_REGISTRY)
     for block, oracle_action in zip(blocks, oracle_actions):
         logger.record_oracle_action(block.block_id, oracle_action)

@@ -38,6 +38,7 @@ def compute_oracle_actions(blocks: list[Block], codec_registry: dict) -> list[in
     Returns:
         List of codec_id (int) for each block, corresponding to the best codec.
     """
+    assert all(b.block_id == i for i, b in enumerate(blocks)), "Blocks must be in order and contiguous by block_id."
     oracle_actions = []
     for block in blocks:
         best_codec_id = None
