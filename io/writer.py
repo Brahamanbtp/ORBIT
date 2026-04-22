@@ -1,4 +1,6 @@
 
+
+import os
 from io.format import ORBITHeader, BlockHeader, write_file_header, write_block_header
 
 
@@ -14,8 +16,19 @@ class BinaryWriter:
 
     def close_file(self) -> None:
         if self._fh:
+            try:
+                self._fh.flush()
+                os.fsync(self._fh.fileno())
+            except Exception:
+                pass
             self._fh.close()
             self._fh = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close_file()
 
     def write_block(self, compressed_data: bytes, codec_id: int, block_id: int) -> None:
         if self._fh is None:
