@@ -7,6 +7,21 @@ from core.interfaces import BanditPolicy
 
 
 class PolicyLogger:
+            def compute_normalized_regret(self, total_bytes: int) -> list[float]:
+                """
+                Divide each element of cumulative regret by the running byte sum up to that block.
+                Returns a list of regret per byte, one per block.
+                """
+                cumulative = self.compute_cumulative_regret()
+                running_bytes = 0
+                result = []
+                for i, entry in enumerate(self.log):
+                    block_size = entry.get("original_size") or entry.get("features", {}).get("size") or 1
+                    running_bytes += block_size
+                    val = cumulative[i] / running_bytes if running_bytes > 0 else 0.0
+                    result.append(val)
+                assert len(result) == len(self.log), f"Normalized regret length {len(result)} does not match log length {len(self.log)}"
+                return result
         self._weight_snapshots: dict[int, dict[int, list[float]]] = {}  # block_id -> {action: weight_vector}
         def log_weight_snapshot(self, block_id: int) -> None:
             """
