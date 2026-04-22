@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import numpy as np
 def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: str, n_runs: int = 5) -> dict:
     """
@@ -65,6 +67,12 @@ from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
+    from codecs import validate_all_codecs
+    # Validate all codecs roundtrip before pipeline runs
+    roundtrip_results = validate_all_codecs()
+    failed = [name for name, ok in roundtrip_results.items() if not ok]
+    if failed:
+        raise RuntimeError(f"Codec roundtrip validation failed for: {failed}")
     from codecs import available_codecs, CODEC_REGISTRY
     # Assert codec registry matches config
     if len(available_codecs()) != config.n_actions:
@@ -139,6 +147,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     from bandit.policy import PolicyLogger
     from features.extractor import BlockFeatureExtractor
     from bandit.action_space import ActionSpace
+    from io.reader import StreamingReader
     from core.processor import split_into_blocks
     from core.block import Block
     from evaluation.oracle import compute_oracle_actions
@@ -169,6 +178,30 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # Compute regret curve
     regret_curve = logger.compute_cumulative_regret()
+
+    # Save normalized regret curve for this run
+    total_bytes = sum(r.get("original_size", 0) for r in orbit_results)
+    normalized_regret_curve = logger.compute_normalized_regret(total_bytes)
+    regret_records = []
+    for idx, entry in enumerate(logger.log):
+        block_id = entry.get("block_id")
+        block_id_val = int(block_id) if isinstance(block_id, int) else int(idx)
+        actual_action = int(entry.get("action", -1))
+        oracle_action = int(logger._oracle_actions.get(block_id, -1))
+        regret_records.append(
+            {
+                "block_id": block_id_val,
+                "normalized_regret": float(normalized_regret_curve[idx]),
+                "cumulative_regret": float(regret_curve[idx]),
+                "oracle_action": oracle_action,
+                "actual_action": actual_action,
+            }
+        )
+
+    seed = config.random_seed if getattr(config, "random_seed", None) is not None else "none"
+    regret_path = os.path.join(output_dir, f"regret_curve_run{seed}.json")
+    with open(regret_path, "w", encoding="utf-8") as f:
+        json.dump(regret_records, f, indent=2)
 
 
     # Run baselines for all codecs (full-file)
@@ -232,6 +265,131 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
     with open(os.path.join(output_dir, "ablation_results.json"), "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2)
     return results
+
+
+def run_core_comparison(
+    manifest_path: str,
+    config: ORBITConfig,
+    output_dir: str,
+    n_runs: int = 5,
+) -> None:
+    """
+    For each DatasetEntry in a manifest, run ORBIT repeated experiments and
+    blockwise baselines for every codec, then save a flat comparison table.
+    """
+    from evaluation.dataset import load_dataset_manifest, validate_manifest
+    from evaluation.baseline import run_baseline_blockwise
+    from evaluation.metrics import throughput_mbps, validate_comparison_record
+
+    os.makedirs(output_dir, exist_ok=True)
+    datasets = load_dataset_manifest(manifest_path)
+    missing = validate_manifest(datasets)
+    if missing:
+        raise RuntimeError(f"Manifest contains missing or unreadable files: {missing}")
+
+    rows: list[dict] = []
+
+    def _mean(values: list[float | None]) -> float | None:
+        numeric = [float(v) for v in values if v is not None]
+        return float(np.mean(numeric)) if numeric else None
+
+    def _extract_orbit_metric(run_result: dict, metric_name: str) -> float | None:
+        orbit_metrics = run_result.get("orbit_metrics", {})
+        if not isinstance(orbit_metrics, dict):
+            return None
+
+        if metric_name in orbit_metrics and orbit_metrics.get(metric_name) is not None:
+            return float(orbit_metrics[metric_name])
+
+        if metric_name == "compression_ratio":
+            mean_cr = orbit_metrics.get("mean_compression_ratio")
+            if mean_cr is not None:
+                return float(mean_cr)
+            total_original = orbit_metrics.get("total_original_bytes")
+            total_compressed = orbit_metrics.get("total_compressed_bytes")
+            if total_original:
+                return float(total_compressed) / float(total_original)
+
+        return None
+
+    for dataset in datasets:
+        dataset_output_dir = os.path.join(output_dir, f"core_{dataset.name}")
+        os.makedirs(dataset_output_dir, exist_ok=True)
+
+        orbit_repeated = run_repeated_experiment(
+            dataset.path,
+            config,
+            dataset_output_dir,
+            n_runs=n_runs,
+        )
+
+        orbit_runs = orbit_repeated.get("all_results", [])
+        compression_values = []
+        throughput_values = []
+        overhead_values = []
+        for run_result in orbit_runs:
+            compression_values.append(_extract_orbit_metric(run_result, "compression_ratio"))
+            throughput_values.append(_extract_orbit_metric(run_result, "throughput_mbps"))
+            overhead_values.append(_extract_orbit_metric(run_result, "overhead_ratio"))
+
+        rows.append(
+            {
+                "run_id": f"{dataset.name}:orbit",
+                "dataset_name": dataset.name,
+                "method_name": "orbit",
+                "compression_ratio": _mean(compression_values),
+                "throughput_mbps": _mean(throughput_values),
+                "overhead_ratio": _mean(overhead_values),
+                "block_size": config.block_size,
+                "dataset_path": dataset.path,
+                "method": "orbit",
+                "codec_name": "ORBIT",
+                "n_runs": n_runs,
+                "seed": config.random_seed,
+                "compression_ratio_mean": _mean(compression_values),
+                "throughput_mbps_mean": _mean(throughput_values),
+                "overhead_ratio_mean": _mean(overhead_values),
+            }
+        )
+
+        for codec_id, codec in CODEC_REGISTRY.items():
+            baseline = run_baseline_blockwise(dataset.path, codec, config.block_size)
+            rows.append(
+                {
+                    "run_id": f"{dataset.name}:baseline:{codec_id}",
+                    "dataset_name": dataset.name,
+                    "method_name": "baseline_blockwise",
+                    "compression_ratio": baseline.get("compression_ratio"),
+                    "throughput_mbps": throughput_mbps(
+                        baseline.get("total_original", 0),
+                        baseline.get("elapsed_ms", 0.0),
+                    ),
+                    "overhead_ratio": 0.0,
+                    "block_size": config.block_size,
+                    "dataset_path": dataset.path,
+                    "method": "baseline_blockwise",
+                    "codec_id": codec_id,
+                    "codec_name": baseline.get("codec_name", type(codec).__name__),
+                    "n_runs": 1,
+                    "seed": config.random_seed,
+                    "compression_ratio_mean": baseline.get("compression_ratio"),
+                    "throughput_mbps_mean": throughput_mbps(
+                        baseline.get("total_original", 0),
+                        baseline.get("elapsed_ms", 0.0),
+                    ),
+                    "overhead_ratio_mean": 0.0,
+                }
+            )
+
+    for record in rows:
+        missing_keys = validate_comparison_record(record)
+        if missing_keys:
+            raise ValueError(
+                f"Invalid core comparison record for run_id={record.get('run_id')}: missing keys {missing_keys}"
+            )
+
+    with open(os.path.join(output_dir, "core_comparison.json"), "w", encoding="utf-8") as f:
+        json.dump(rows, f, indent=2)
 
 
 if __name__ == "__main__":
