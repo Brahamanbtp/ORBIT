@@ -1,3 +1,17 @@
+from utils.byte_utils import validate_roundtrip
+import os
+def validate_all_codecs(test_data: bytes = None) -> dict:
+	"""
+	Run validate_roundtrip for each codec in CODEC_REGISTRY. Return dict mapping codec name to bool.
+	If test_data is None, use a fixed 512-byte synthetic payload.
+	"""
+	if test_data is None:
+		test_data = os.urandom(512)
+	results = {}
+	for codec_id, codec in CODEC_REGISTRY.items():
+		name = type(codec).__name__
+		results[name] = validate_roundtrip(codec, test_data)
+	return results
 
 
 from utils.logging import logger
