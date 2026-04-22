@@ -26,6 +26,27 @@ def compute_overhead_breakdown_from_accumulator(timing_records: list[dict]) -> d
     dominant_phase = max(stats.items(), key=lambda x: x[1]["total"])[0] if stats else None
     stats["dominant_phase"] = dominant_phase
     return stats
+
+
+def validate_comparison_record(record: dict) -> list[str]:
+    """
+    Validate required schema fields for a core comparison result record.
+    Returns a list of missing key names; empty list means valid.
+    """
+    required_keys = [
+        "run_id",
+        "dataset_name",
+        "method_name",
+        "compression_ratio",
+        "throughput_mbps",
+        "overhead_ratio",
+        "block_size",
+        "n_runs",
+        "seed",
+    ]
+    return [key for key in required_keys if key not in record]
+
+
 def compression_ratio(original: int, compressed: int) -> float:
     if original == 0:
         return 0.0
