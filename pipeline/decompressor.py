@@ -31,6 +31,16 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
                         f"Codec registry checksum mismatch: file={file_header.codec_registry_checksum}, current={current_checksum}. "
                         f"This indicates a codec registry change or incompatibility."
                     )
+            # Log codec_versions if present
+            import json, warnings
+            codec_versions_bytes = getattr(file_header, "codec_versions", None)
+            if codec_versions_bytes:
+                try:
+                    s = codec_versions_bytes.rstrip(b" ")
+                    codec_versions = json.loads(s.decode("utf-8"))
+                    warnings.warn(f"File codec_versions: {codec_versions}")
+                except Exception:
+                    warnings.warn(f"Could not decode codec_versions field: {codec_versions_bytes}")
             # Use block_size from header for validation only
             header_block_size = getattr(file_header, "block_size", None)
             for _ in range(file_header.n_blocks):

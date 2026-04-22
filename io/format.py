@@ -5,6 +5,7 @@ from typing import BinaryIO
 ORBIT_MAGIC = b"ORBT"
 
 
+
 @dataclass
 class ORBITHeader:
     magic: bytes
@@ -12,20 +13,34 @@ class ORBITHeader:
     n_blocks: int
     block_size: int
     codec_registry_checksum: int = 0
+    codec_versions: bytes = b""  # 32 bytes, JSON-encoded dict, padded/truncated
 
 
-_HEADER_FORMAT = "<4sIIII"  # magic:4s, version:uint32, n_blocks:uint32, block_size:uint32, codec_registry_checksum:uint32
+
+_HEADER_FORMAT = "<4sIIII32s"  # add 32-byte codec_versions string
 _HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)
 _VERSION = 1
 
-def write_file_header(f: BinaryIO, n_blocks: int, block_size: int, codec_registry_checksum: int) -> None:
-    header = struct.pack(_HEADER_FORMAT, ORBIT_MAGIC, _VERSION, n_blocks, block_size, codec_registry_checksum)
+def write_file_header(f: BinaryIO, n_blocks: int, block_size: int, codec_registry_checksum: int, codec_versions: bytes) -> None:
+    # codec_versions must be 32 bytes (padded/truncated)
+    if len(codec_versions) > 32:
+        codec_versions = codec_versions[:32]
+    elif len(codec_versions) < 32:
+        codec_versions = codec_versions.ljust(32, b" ")
+    header = struct.pack(_HEADER_FORMAT, ORBIT_MAGIC, _VERSION, n_blocks, block_size, codec_registry_checksum, codec_versions)
     f.write(header)
 
 def read_file_header(f: BinaryIO) -> ORBITHeader:
     header_bytes = f.read(_HEADER_SIZE)
-    magic, version, n_blocks, block_size, codec_registry_checksum = struct.unpack(_HEADER_FORMAT, header_bytes)
-    return ORBITHeader(magic=magic, version=version, n_blocks=n_blocks, block_size=block_size, codec_registry_checksum=codec_registry_checksum)
+    magic, version, n_blocks, block_size, codec_registry_checksum, codec_versions = struct.unpack(_HEADER_FORMAT, header_bytes)
+    return ORBITHeader(
+        magic=magic,
+        version=version,
+        n_blocks=n_blocks,
+        block_size=block_size,
+        codec_registry_checksum=codec_registry_checksum,
+        codec_versions=codec_versions,
+    )
 
 
 # 16-byte block header: block_id:uint32, codec_id:uint32, original_size:uint32, compressed_size:uint32

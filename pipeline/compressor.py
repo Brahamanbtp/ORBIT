@@ -69,11 +69,59 @@ class ORBITCompressor:
         self.action_space = action_space
 
     def compress_file(self, input_path: str, output_path: str) -> list[dict]:
+        import json
+        from io.format import write_file_header
+        from codecs import available_codecs
+        import importlib
+
         reader = StreamingReader(input_path, self.config.block_size)
         router = BlockRouter(self.extractor, self.policy, self.action_space)
         writer = BinaryWriter(output_path)
-        results = []
-        for block in split_into_blocks(reader, self.config.block_size):
-            result = process_block(block, router, self.policy, writer)
-            results.append(result)
+
+        # Prepare codec_versions dict
+        codec_versions = {}
+        for name in available_codecs():
+            try:
+                if name.lower().startswith("lz4"):
+                    mod = importlib.import_module("lz4")
+                elif name.lower().startswith("zstd"):
+                    mod = importlib.import_module("zstandard")
+                elif name.lower().startswith("lzma"):
+                    import sys
+                    mod = None
+                else:
+                    mod = None
+                if mod is not None:
+                    version = getattr(mod, "__version__", "unknown")
+                elif name.lower().startswith("lzma"):
+                    import sys
+                    version = sys.version.split()[0]
+                else:
+                    version = "unknown"
+            except Exception:
+                version = "unknown"
+            codec_versions[name] = version
+        codec_versions_json = json.dumps(codec_versions).encode("utf-8")
+        if len(codec_versions_json) > 32:
+            codec_versions_json = codec_versions_json[:32]
+        elif len(codec_versions_json) < 32:
+            codec_versions_json = codec_versions_json.ljust(32, b" ")
+
+        # Write file header (assume writer has a file handle f)
+        # You may need to adapt this if header writing is elsewhere
+        n_blocks = 0
+        block_size = self.config.block_size
+        codec_registry_checksum = 0
+        from codecs import CODEC_REGISTRY
+        for k in CODEC_REGISTRY.keys():
+            codec_registry_checksum ^= k
+        # Write header at start
+        with open(output_path, "wb") as f:
+            write_file_header(f, n_blocks, block_size, codec_registry_checksum, codec_versions_json)
+            # Now write blocks
+            results = []
+            for block in split_into_blocks(reader, self.config.block_size):
+                result = process_block(block, router, self.policy, writer)
+                results.append(result)
+            # Optionally, update n_blocks in header if needed (not shown)
         return results
