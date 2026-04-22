@@ -65,6 +65,12 @@ from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
+    from codecs import available_codecs, CODEC_REGISTRY
+    # Assert codec registry matches config
+    if len(available_codecs()) != config.n_actions:
+        raise RuntimeError(f"Number of available codecs ({len(available_codecs())}) does not match config.n_actions ({config.n_actions}). Available: {available_codecs()}")
+    if set(CODEC_REGISTRY.keys()) != set(range(config.n_actions)):
+        raise RuntimeError(f"CODEC_REGISTRY keys {set(CODEC_REGISTRY.keys())} do not match expected set {set(range(config.n_actions))} for n_actions={config.n_actions}.")
 
     import random
     import sys
