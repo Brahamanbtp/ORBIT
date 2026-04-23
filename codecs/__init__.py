@@ -1,5 +1,7 @@
 from utils.byte_utils import validate_roundtrip
 import os
+import hashlib
+import json
 def validate_all_codecs(test_data: bytes = None) -> dict:
 	"""
 	Run validate_roundtrip for each codec in CODEC_REGISTRY. Return dict mapping codec name to bool.
@@ -55,3 +57,20 @@ def available_codecs() -> list[str]:
 
 def get_codec(codec_id: int):
 	return CODEC_REGISTRY[codec_id]
+
+
+def snapshot_registry() -> str:
+	"""
+	Return a stable hash for codec registry state.
+	Includes sorted codec names, sorted codec ids, and codec class names.
+	"""
+	codec_ids = sorted(int(codec_id) for codec_id in CODEC_REGISTRY.keys())
+	codec_names = sorted(str(name) for name in CODEC_ID_MAP.keys())
+	codec_class_names = sorted(type(codec).__name__ for codec in CODEC_REGISTRY.values())
+	payload = {
+		"codec_ids": codec_ids,
+		"codec_names": codec_names,
+		"codec_class_names": codec_class_names,
+	}
+	serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+	return hashlib.sha256(serialized.encode("utf-8")).hexdigest()

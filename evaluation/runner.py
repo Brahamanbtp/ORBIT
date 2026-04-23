@@ -1,6 +1,44 @@
 from __future__ import annotations
 
 import numpy as np
+
+
+def verify_seed_consistency(results: list[dict]) -> bool:
+    """
+    Validate deterministic seed progression and duplicate (run_id, seed) consistency.
+    """
+    if not results:
+        return True
+
+    pair_payloads: dict[tuple[int, int], str] = {}
+    for rec in results:
+        if "run_id" not in rec or "seed" not in rec or "base_seed" not in rec:
+            print("WARNING: verify_seed_consistency missing one of run_id/seed/base_seed fields")
+            return False
+
+        run_id = int(rec["run_id"])
+        seed = int(rec["seed"])
+        base_seed = int(rec["base_seed"])
+        expected_seed = base_seed + run_id
+
+        if seed != expected_seed:
+            print(
+                f"WARNING: seed mismatch for run_id={run_id}: expected {expected_seed}, got {seed}"
+            )
+            return False
+
+        pair = (run_id, seed)
+        payload = json.dumps(rec.get("result", {}), sort_keys=True, default=str)
+        if pair in pair_payloads and pair_payloads[pair] != payload:
+            print(
+                f"WARNING: duplicate (run_id, seed) pair {pair} has inconsistent results"
+            )
+            return False
+        pair_payloads[pair] = payload
+
+    return True
+
+
 def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: str, n_runs: int = 5) -> dict:
     """
     Run run_experiment n_runs times, varying the random seed, and aggregate results.
@@ -9,13 +47,35 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     """
     os.makedirs(output_dir, exist_ok=True)
     all_results = []
+    normalized_regret_curves = []
+    seed_consistency_records = []
+    base_seed = int(config.random_seed or 0)
     for run_idx in range(n_runs):
         run_config = ORBITConfig(
-            **{**config.__dict__, "random_seed": (config.random_seed or 0) + run_idx}
+            **{**config.__dict__, "random_seed": base_seed + run_idx}
         )
         np.random.seed(run_config.random_seed)
         result = run_experiment(input_path, run_config, output_dir)
         all_results.append(result)
+        seed_consistency_records.append(
+            {
+                "run_id": int(run_idx),
+                "base_seed": int(base_seed),
+                "seed": int(run_config.random_seed),
+                "result": result,
+            }
+        )
+
+        # Collect the per-run normalized regret curve saved by run_experiment.
+        regret_path = os.path.join(output_dir, f"regret_curve_run{run_config.random_seed}.json")
+        if os.path.exists(regret_path):
+            try:
+                with open(regret_path, "r", encoding="utf-8") as f:
+                    curve = json.load(f)
+                if isinstance(curve, list) and curve:
+                    normalized_regret_curves.append(curve)
+            except Exception:
+                pass
 
     # Aggregate metrics
     def collect_metric(results, key_path):
@@ -53,6 +113,38 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
         agg["regret_curve_mean"] = []
         agg["regret_curve_std"] = []
 
+    # Aggregate per-run normalized regret curves element-wise by block index.
+    aggregated_regret_records = []
+    if normalized_regret_curves:
+        min_len = min(len(curve) for curve in normalized_regret_curves)
+        curves_trunc = [curve[:min_len] for curve in normalized_regret_curves]
+
+        normalized_regret_arr = np.array(
+            [
+                [float(entry.get("normalized_regret", 0.0)) for entry in curve]
+                for curve in curves_trunc
+            ],
+            dtype=float,
+        )
+        mean_vals = normalized_regret_arr.mean(axis=0)
+        std_vals = normalized_regret_arr.std(axis=0)
+
+        for idx in range(min_len):
+            block_id = curves_trunc[0][idx].get("block_id", idx)
+            aggregated_regret_records.append(
+                {
+                    "block_id": int(block_id),
+                    "mean_normalized_regret": float(mean_vals[idx]),
+                    "std_normalized_regret": float(std_vals[idx]),
+                }
+            )
+
+    agg["seed_consistent"] = verify_seed_consistency(seed_consistency_records)
+
+    with open(os.path.join(output_dir, "regret_curve_aggregated.json"), "w", encoding="utf-8") as f:
+        json.dump(aggregated_regret_records, f, indent=2)
+    agg["regret_curve_aggregated"] = aggregated_regret_records
+
     agg["all_results"] = all_results
 
     with open(os.path.join(output_dir, "repeated_results.json"), "w", encoding="utf-8") as f:
@@ -66,8 +158,29 @@ from pipeline.compressor import ORBITCompressor
 from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
 
+
+def generate_ablation_configs(base_config: ORBITConfig) -> list[tuple[str, list[str]]]:
+    """
+    Return all non-empty feature subsets used for ablation experiments.
+    Each entry is (label, feature_list), where label is "+"-joined sorted features.
+    """
+    from itertools import combinations
+
+    _ = base_config
+    features = ["entropy", "rle_ratio", "repetition"]
+    configs: list[tuple[str, list[str]]] = []
+
+    for subset_size in range(1, len(features) + 1):
+        for subset in combinations(features, subset_size):
+            feature_list = sorted(list(subset))
+            label = "+".join(feature_list)
+            configs.append((label, feature_list))
+
+    return configs
+
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
-    from codecs import validate_all_codecs
+    from codecs import validate_all_codecs, snapshot_registry
+    codec_snapshot_start = snapshot_registry()
     # Validate all codecs roundtrip before pipeline runs
     roundtrip_results = validate_all_codecs()
     failed = [name for name, ok in roundtrip_results.items() if not ok]
@@ -130,6 +243,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     manifest = {
         "config": dict(config.__dict__),
         "orbit_version": orbit_version,
+        "codec_snapshot": codec_snapshot_start,
         "codec_versions": {
             "lz4": lz4_version,
             "zstd": zstd_version,
@@ -227,6 +341,14 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "baselines_blockwise": baselines_blockwise,
         "regret_curve": regret_curve,
     }
+
+    codec_snapshot_end = snapshot_registry()
+    if codec_snapshot_end != codec_snapshot_start:
+        raise RuntimeError(
+            "Codec registry mutated during experiment: "
+            f"start={codec_snapshot_start}, end={codec_snapshot_end}"
+        )
+
     with open(os.path.join(output_dir, "results.json"), "w", encoding="utf-8") as f:
         json.dump(combined, f, indent=2)
     return combined
@@ -247,19 +369,37 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
 
     os.makedirs(output_dir, exist_ok=True)
     config = ORBITConfig.load_yaml("configs/default.yaml")
+    _ = feature_sets
+    ablation_configs = generate_ablation_configs(config)
     results = []
     for dataset in datasets:
-        for feature_set in feature_sets:
+        for label, feature_set in ablation_configs:
             extractor = BlockFeatureExtractor(enabled_features=feature_set)
             policy = LinUCB(n_actions=config.n_actions, feature_dim=len(feature_set), alpha=config.alpha)
             action_space = ActionSpace(["raw", "lz4", "zstd", "lzma"][:config.n_actions])
             compressor = ORBITCompressor(config, extractor, policy, action_space)
             try:
-                orbit_results = compressor.compress_file(dataset.path, os.path.join(output_dir, f"orbit_{dataset.name}_{'_'.join(feature_set)}.bin"))
+                orbit_results = compressor.compress_file(dataset.path, os.path.join(output_dir, f"orbit_{dataset.name}_{label.replace('+', '_')}.bin"))
             except Exception:
                 orbit_results = []
             metrics = aggregate_block_results(orbit_results)
+            codec_counts = metrics.get("codec_selection_counts", {})
+            total_actions = sum(codec_counts.values())
+            if total_actions > 0:
+                codec_selection_entropy = float(
+                    -sum(
+                        (count / total_actions) * np.log2(count / total_actions)
+                        for count in codec_counts.values()
+                        if count > 0
+                    )
+                )
+            else:
+                codec_selection_entropy = 0.0
+
+            metrics["compression_ratio"] = float(metrics.get("mean_compression_ratio", 0.0))
+            metrics["codec_selection_entropy"] = codec_selection_entropy
             metrics["feature_set"] = list(feature_set)
+            metrics["feature_set_label"] = label
             metrics["dataset_name"] = dataset.name
             results.append(metrics)
     with open(os.path.join(output_dir, "ablation_results.json"), "w", encoding="utf-8") as f:
@@ -288,6 +428,35 @@ def run_core_comparison(
         raise RuntimeError(f"Manifest contains missing or unreadable files: {missing}")
 
     rows: list[dict] = []
+
+    def verify_block_size_consistency(config: ORBITConfig, baseline_results: list[dict]) -> None:
+        expected_block_size = config.block_size
+        if expected_block_size is None:
+            raise AssertionError("Config block_size is None; cannot verify block size consistency.")
+
+        for idx, result in enumerate(baseline_results):
+            if "block_size" not in result:
+                raise AssertionError(
+                    f"Missing block_size in baseline_results[{idx}] for run_id={result.get('run_id')}"
+                )
+            actual_block_size = result.get("block_size")
+            if actual_block_size != expected_block_size:
+                raise AssertionError(
+                    f"Block size mismatch in run_id={result.get('run_id')}: "
+                    f"expected {expected_block_size}, got {actual_block_size}"
+                )
+
+        orbit_rows = [r for r in baseline_results if str(r.get("method_name", "")).lower() == "orbit"]
+        if not orbit_rows:
+            raise AssertionError("No ORBIT row found in baseline_results to verify ORBIT block size.")
+
+        for orbit_row in orbit_rows:
+            observed_orbit_block_size = orbit_row.get("orbit_block_size_observed", orbit_row.get("block_size"))
+            if observed_orbit_block_size != expected_block_size:
+                raise AssertionError(
+                    f"ORBIT block size mismatch for run_id={orbit_row.get('run_id')}: "
+                    f"expected {expected_block_size}, observed {observed_orbit_block_size}"
+                )
 
     def _mean(values: list[float | None]) -> float | None:
         numeric = [float(v) for v in values if v is not None]
@@ -323,6 +492,16 @@ def run_core_comparison(
             n_runs=n_runs,
         )
 
+        manifest_path = os.path.join(dataset_output_dir, "reproducibility_manifest.json")
+        orbit_block_size_observed = None
+        if os.path.exists(manifest_path):
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as mf:
+                    manifest = json.load(mf)
+                orbit_block_size_observed = manifest.get("config", {}).get("block_size")
+            except Exception:
+                orbit_block_size_observed = None
+
         orbit_runs = orbit_repeated.get("all_results", [])
         compression_values = []
         throughput_values = []
@@ -349,6 +528,7 @@ def run_core_comparison(
                 "compression_ratio_mean": _mean(compression_values),
                 "throughput_mbps_mean": _mean(throughput_values),
                 "overhead_ratio_mean": _mean(overhead_values),
+                "orbit_block_size_observed": orbit_block_size_observed,
             }
         )
 
@@ -388,8 +568,306 @@ def run_core_comparison(
                 f"Invalid core comparison record for run_id={record.get('run_id')}: missing keys {missing_keys}"
             )
 
+    verify_block_size_consistency(config, rows)
+
     with open(os.path.join(output_dir, "core_comparison.json"), "w", encoding="utf-8") as f:
         json.dump(rows, f, indent=2)
+
+
+def run_block_size_sweep(
+    input_path: str,
+    base_config: ORBITConfig,
+    output_dir: str,
+    block_sizes: list[int] = None,
+) -> None:
+    """
+    Sweep block sizes and collect repeated-experiment summary metrics.
+    Saves results as block_size_sweep.json in output_dir.
+    """
+    import time
+    from evaluation.metrics import throughput_mbps
+
+    os.makedirs(output_dir, exist_ok=True)
+    sizes = block_sizes if block_sizes is not None else [1024, 4096, 16384, 65536]
+    input_bytes = os.path.getsize(input_path) if os.path.exists(input_path) else 0
+    sweep_rows: list[dict] = []
+
+    for block_size in sizes:
+        run_config = ORBITConfig(
+            **{**base_config.__dict__, "block_size": int(block_size)}
+        )
+        block_output_dir = os.path.join(output_dir, f"block_size_{int(block_size)}")
+
+        start = time.time()
+        repeated = run_repeated_experiment(
+            input_path,
+            run_config,
+            block_output_dir,
+            n_runs=3,
+        )
+        elapsed_ms = (time.time() - start) * 1000.0
+
+        compression_ratio_mean = repeated.get("compression_ratio_mean")
+        if compression_ratio_mean is None:
+            all_results = repeated.get("all_results", [])
+            ratios = []
+            for run_result in all_results:
+                orbit_metrics = run_result.get("orbit_metrics", {})
+                if orbit_metrics.get("mean_compression_ratio") is not None:
+                    ratios.append(float(orbit_metrics["mean_compression_ratio"]))
+            compression_ratio_mean = float(np.mean(ratios)) if ratios else None
+
+        regret_curve = repeated.get("regret_curve_mean", []) or []
+        regret_convergence_block = None
+        for idx in range(1, len(regret_curve)):
+            slope = float(regret_curve[idx]) - float(regret_curve[idx - 1])
+            if abs(slope) < 0.001:
+                regret_convergence_block = idx
+                break
+
+        row = {
+            "block_size": int(block_size),
+            "compression_ratio_mean": float(compression_ratio_mean) if compression_ratio_mean is not None else None,
+            "regret_convergence_block": regret_convergence_block,
+            "throughput_mbps": float(throughput_mbps(input_bytes * 3, elapsed_ms)),
+        }
+        sweep_rows.append(row)
+
+    with open(os.path.join(output_dir, "block_size_sweep.json"), "w", encoding="utf-8") as f:
+        json.dump(sweep_rows, f, indent=2)
+
+
+def prepare_table1(core_comparison_path: str, output_path: str) -> None:
+    """
+    Prepare a pivoted summary table from core_comparison.json.
+    Output rows are keyed by dataset_name with one column per method_name.
+    """
+    with open(core_comparison_path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
+    if not isinstance(records, list):
+        raise ValueError("core_comparison.json must contain a list of records")
+
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for rec in records:
+        dataset_name = rec.get("dataset_name")
+        method_name = rec.get("method_name")
+        if dataset_name is None or method_name is None:
+            continue
+        grouped.setdefault(str(dataset_name), {}).setdefault(str(method_name), []).append(rec)
+
+    table_rows: list[dict] = []
+    for dataset_name, method_groups in grouped.items():
+        row: dict = {"dataset_name": dataset_name}
+        best_baseline_mean: float | None = None
+        orbit_mean: float | None = None
+
+        for method_name, method_records in method_groups.items():
+            compression_vals = []
+            throughput_vals = []
+
+            for rec in method_records:
+                cr_val = rec.get("compression_ratio")
+                if cr_val is None:
+                    cr_val = rec.get("compression_ratio_mean")
+                if cr_val is not None:
+                    compression_vals.append(float(cr_val))
+
+                tp_val = rec.get("throughput_mbps")
+                if tp_val is None:
+                    tp_val = rec.get("throughput_mbps_mean")
+                if tp_val is not None:
+                    throughput_vals.append(float(tp_val))
+
+            mean_cr = float(np.mean(compression_vals)) if compression_vals else None
+            std_cr = float(np.std(compression_vals)) if compression_vals else None
+            mean_tp = float(np.mean(throughput_vals)) if throughput_vals else None
+
+            row[method_name] = {
+                "mean_compression_ratio": mean_cr,
+                "std_compression_ratio": std_cr,
+                "mean_compression_ratio_pm_std": (
+                    f"{mean_cr:.6f} ± {std_cr:.6f}" if mean_cr is not None and std_cr is not None else None
+                ),
+                "throughput_mbps": mean_tp,
+            }
+
+            if method_name.lower() == "orbit":
+                orbit_mean = mean_cr
+            else:
+                if mean_cr is not None and (best_baseline_mean is None or mean_cr < best_baseline_mean):
+                    best_baseline_mean = mean_cr
+
+        # Compression ratio: lower is better; positive gain means ORBIT improved over best baseline.
+        if orbit_mean is not None and best_baseline_mean is not None and best_baseline_mean > 0:
+            row["relative_gain_vs_best_baseline"] = float((best_baseline_mean - orbit_mean) / best_baseline_mean)
+        else:
+            row["relative_gain_vs_best_baseline"] = None
+
+        table_rows.append(row)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(table_rows, f, indent=2)
+
+
+def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> None:
+    """
+    Convert aggregated regret records into plotting-ready arrays.
+    Saves JSON with x, y_mean, y_upper, y_lower, and convergence_block.
+    """
+    from evaluation.metrics import estimate_convergence_block
+
+    with open(aggregated_regret_path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
+    if not isinstance(records, list):
+        raise ValueError("regret_curve_aggregated.json must contain a list of records")
+
+    sorted_records = sorted(
+        [rec for rec in records if isinstance(rec, dict)],
+        key=lambda rec: int(rec.get("block_id", 0)),
+    )
+
+    x: list[int] = []
+    y_mean: list[float] = []
+    y_upper: list[float] = []
+    y_lower: list[float] = []
+
+    for rec in sorted_records:
+        block_id = int(rec.get("block_id", 0))
+        mean_val = float(rec.get("mean_normalized_regret", 0.0))
+        std_val = float(rec.get("std_normalized_regret", 0.0))
+
+        x.append(block_id)
+        y_mean.append(mean_val)
+        y_upper.append(mean_val + std_val)
+        y_lower.append(mean_val - std_val)
+
+    payload = {
+        "x": x,
+        "y_mean": y_mean,
+        "y_upper": y_upper,
+        "y_lower": y_lower,
+        "convergence_block": int(estimate_convergence_block(y_mean)) if y_mean else -1,
+    }
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
+
+
+def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
+    """
+    Prepare ranked ablation table from ablation_results.json.
+    Adds rank, delta_vs_full_features, and is_best fields.
+    """
+    with open(ablation_path, "r", encoding="utf-8") as f:
+        records = json.load(f)
+
+    if not isinstance(records, list):
+        raise ValueError("ablation_results.json must contain a list of records")
+
+    rows = [rec for rec in records if isinstance(rec, dict)]
+
+    def _compression_ratio(rec: dict) -> float:
+        value = rec.get("compression_ratio")
+        if value is None:
+            value = rec.get("mean_compression_ratio")
+        return float(value) if value is not None else float("-inf")
+
+    # Full-feature config is the all-three-features subset.
+    full_features_ratio = None
+    full_set = {"entropy", "rle_ratio", "repetition"}
+    for rec in rows:
+        feature_set = rec.get("feature_set", [])
+        if isinstance(feature_set, list) and set(feature_set) == full_set:
+            ratio = rec.get("compression_ratio")
+            if ratio is None:
+                ratio = rec.get("mean_compression_ratio")
+            if ratio is not None:
+                full_features_ratio = float(ratio)
+                break
+
+    sorted_rows = sorted(rows, key=_compression_ratio, reverse=True)
+
+    table_rows: list[dict] = []
+    for idx, rec in enumerate(sorted_rows, start=1):
+        row = dict(rec)
+        ratio = row.get("compression_ratio")
+        if ratio is None:
+            ratio = row.get("mean_compression_ratio")
+        ratio_val = float(ratio) if ratio is not None else None
+
+        row["rank"] = idx
+        row["delta_vs_full_features"] = (
+            float(ratio_val - full_features_ratio)
+            if ratio_val is not None and full_features_ratio is not None
+            else None
+        )
+        row["is_best"] = idx == 1
+        table_rows.append(row)
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(table_rows, f, indent=2)
+
+
+def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
+    """
+    Convert block-size sweep results into plotting-ready arrays.
+    Saves JSON with x, y_ratio, y_throughput, y_convergence, and optimal_block_size.
+    """
+    with open(sweep_path, "r", encoding="utf-8") as f:
+        rows = json.load(f)
+
+    if not isinstance(rows, list):
+        raise ValueError("block_size_sweep.json must contain a list of records")
+
+    valid_rows = [row for row in rows if isinstance(row, dict)]
+    sorted_rows = sorted(valid_rows, key=lambda row: int(row.get("block_size", 0)))
+
+    x: list[int] = []
+    y_ratio: list[float] = []
+    y_throughput: list[float] = []
+    y_convergence: list[int] = []
+
+    for row in sorted_rows:
+        block_size = int(row.get("block_size", 0))
+        ratio = row.get("compression_ratio")
+        if ratio is None:
+            ratio = row.get("compression_ratio_mean", 0.0)
+        throughput = row.get("throughput_mbps", 0.0)
+        convergence = row.get("regret_convergence_block", -1)
+
+        x.append(block_size)
+        y_ratio.append(float(ratio))
+        y_throughput.append(float(throughput))
+        y_convergence.append(int(convergence) if convergence is not None else -1)
+
+    optimal_block_size = -1
+    if sorted_rows:
+        best_row = max(
+            sorted_rows,
+            key=lambda row: float(
+                row.get("compression_ratio")
+                if row.get("compression_ratio") is not None
+                else row.get("compression_ratio_mean", float("-inf"))
+            ),
+        )
+        optimal_block_size = int(best_row.get("block_size", -1))
+
+    payload = {
+        "x": x,
+        "y_ratio": y_ratio,
+        "y_throughput": y_throughput,
+        "y_convergence": y_convergence,
+        "optimal_block_size": optimal_block_size,
+    }
+
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2)
 
 
 if __name__ == "__main__":
