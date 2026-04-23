@@ -1,6 +1,20 @@
 from __future__ import annotations
 
 import numpy as np
+from typing import Any
+
+
+def ensure_output_dirs(output_dir: str) -> None:
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "logs"), exist_ok=True)
+    os.makedirs(os.path.join(output_dir, "manifests"), exist_ok=True)
+
+
+def safe_save_json(data: Any, path: str) -> None:
+    serialized = json.dumps(data, indent=2, default=str)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(serialized)
+    print(f"Saved: {path}")
 
 
 def verify_seed_consistency(results: list[dict]) -> bool:
@@ -45,6 +59,7 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     Computes mean and std for compression_ratio, mean_reward, and regret_curve.
     Saves results as repeated_results.json in output_dir.
     """
+    ensure_output_dirs(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     all_results = []
     normalized_regret_curves = []
@@ -141,14 +156,12 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
 
     agg["seed_consistent"] = verify_seed_consistency(seed_consistency_records)
 
-    with open(os.path.join(output_dir, "regret_curve_aggregated.json"), "w", encoding="utf-8") as f:
-        json.dump(aggregated_regret_records, f, indent=2)
+    safe_save_json(aggregated_regret_records, os.path.join(output_dir, "regret_curve_aggregated.json"))
     agg["regret_curve_aggregated"] = aggregated_regret_records
 
     agg["all_results"] = all_results
 
-    with open(os.path.join(output_dir, "repeated_results.json"), "w", encoding="utf-8") as f:
-        json.dump(agg, f, indent=2)
+    safe_save_json(agg, os.path.join(output_dir, "repeated_results.json"))
     return agg
 import os
 import json
@@ -179,19 +192,9 @@ def generate_ablation_configs(base_config: ORBITConfig) -> list[tuple[str, list[
     return configs
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
+    ensure_output_dirs(output_dir)
     from codecs import validate_all_codecs, snapshot_registry
     codec_snapshot_start = snapshot_registry()
-    # Validate all codecs roundtrip before pipeline runs
-    roundtrip_results = validate_all_codecs()
-    failed = [name for name, ok in roundtrip_results.items() if not ok]
-    if failed:
-        raise RuntimeError(f"Codec roundtrip validation failed for: {failed}")
-    from codecs import available_codecs, CODEC_REGISTRY
-    # Assert codec registry matches config
-    if len(available_codecs()) != config.n_actions:
-        raise RuntimeError(f"Number of available codecs ({len(available_codecs())}) does not match config.n_actions ({config.n_actions}). Available: {available_codecs()}")
-    if set(CODEC_REGISTRY.keys()) != set(range(config.n_actions)):
-        raise RuntimeError(f"CODEC_REGISTRY keys {set(CODEC_REGISTRY.keys())} do not match expected set {set(range(config.n_actions))} for n_actions={config.n_actions}.")
 
     import random
     import sys
@@ -254,8 +257,20 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "dataset_size_bytes": dataset_size,
         "timestamp": timestamp,
     }
-    with open(os.path.join(output_dir, "reproducibility_manifest.json"), "w", encoding="utf-8") as f:
-        json.dump(manifest, f, indent=2)
+    safe_save_json(manifest, os.path.join(output_dir, "reproducibility_manifest.json"))
+
+    # Validate all codecs roundtrip after manifest write and before pipeline runs.
+    roundtrip_results = validate_all_codecs()
+    failed = [name for name, ok in roundtrip_results.items() if not ok]
+    if failed:
+        raise RuntimeError(f"Codec roundtrip validation failed for: {failed}")
+
+    from codecs import available_codecs, CODEC_REGISTRY
+    # Assert codec registry matches config
+    if len(available_codecs()) != config.n_actions:
+        raise RuntimeError(f"Number of available codecs ({len(available_codecs())}) does not match config.n_actions ({config.n_actions}). Available: {available_codecs()}")
+    if set(CODEC_REGISTRY.keys()) != set(range(config.n_actions)):
+        raise RuntimeError(f"CODEC_REGISTRY keys {set(CODEC_REGISTRY.keys())} do not match expected set {set(range(config.n_actions))} for n_actions={config.n_actions}.")
 
     from bandit.linucb import LinUCB
     from bandit.policy import PolicyLogger
@@ -273,16 +288,6 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     action_space = ActionSpace([k for k in CODEC_REGISTRY.keys()])
     compressor = ORBITCompressor(config, extractor, logger, action_space)
 
-
-    # Read all blocks for pipeline and oracle (single pass)
-    reader = StreamingReader(input_path, config.block_size)
-    blocks = list(split_into_blocks(reader, config.block_size))
-
-    # Compute oracle actions using the same block list
-    oracle_actions = compute_oracle_actions(blocks, CODEC_REGISTRY)
-    for block, oracle_action in zip(blocks, oracle_actions):
-        logger.record_oracle_action(block.block_id, oracle_action)
-
     # Run ORBIT pipeline
     orbit_results = []
     try:
@@ -290,10 +295,53 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     except Exception:
         pass
 
+    # Read all blocks once for oracle computation (no re-read for oracle itself).
+    reader = StreamingReader(input_path, config.block_size)
+    blocks = list(split_into_blocks(reader, config.block_size))
+
+    # Compute oracle actions using the same block list (no re-read).
+    oracle_actions = compute_oracle_actions(blocks, CODEC_REGISTRY)
+    for block, oracle_action in zip(blocks, oracle_actions):
+        logger.record_oracle_action(block.block_id, oracle_action)
+
     # Compute regret curve
     regret_curve = logger.compute_cumulative_regret()
 
-    # Save normalized regret curve for this run
+
+    # Aggregate ORBIT metrics
+    orbit_metrics = aggregate_block_results(orbit_results)
+
+    # Run baselines for all codecs (full-file)
+    baseline_metrics = {}
+    for codec_id, codec in CODEC_REGISTRY.items():
+        result = run_baseline(input_path, codec)
+        baseline_metrics[result["codec_name"]] = result
+
+    # Run blockwise baselines for all codecs
+    from evaluation.baseline import run_baseline_blockwise
+    baselines_blockwise = {}
+    for codec_id, codec in CODEC_REGISTRY.items():
+        result = run_baseline_blockwise(input_path, codec, config.block_size)
+        baselines_blockwise[result["codec_name"]] = result
+
+    # Save and return
+    combined = {
+        "orbit_metrics": orbit_metrics,
+        "baseline_metrics": baseline_metrics,
+        "baselines_blockwise": baselines_blockwise,
+        "regret_curve": regret_curve,
+    }
+
+    codec_snapshot_end = snapshot_registry()
+    if codec_snapshot_end != codec_snapshot_start:
+        raise RuntimeError(
+            "Codec registry mutated during experiment: "
+            f"start={codec_snapshot_start}, end={codec_snapshot_end}"
+        )
+
+    safe_save_json(combined, os.path.join(output_dir, "results.json"))
+
+    # Save normalized regret curve for this run.
     total_bytes = sum(r.get("original_size", 0) for r in orbit_results)
     normalized_regret_curve = logger.compute_normalized_regret(total_bytes)
     regret_records = []
@@ -314,43 +362,8 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     seed = config.random_seed if getattr(config, "random_seed", None) is not None else "none"
     regret_path = os.path.join(output_dir, f"regret_curve_run{seed}.json")
-    with open(regret_path, "w", encoding="utf-8") as f:
-        json.dump(regret_records, f, indent=2)
+    safe_save_json(regret_records, regret_path)
 
-
-    # Run baselines for all codecs (full-file)
-    baseline_metrics = {}
-    for codec_id, codec in CODEC_REGISTRY.items():
-        result = run_baseline(input_path, codec)
-        baseline_metrics[result["codec_name"]] = result
-
-    # Run blockwise baselines for all codecs
-    from evaluation.baseline import run_baseline_blockwise
-    baselines_blockwise = {}
-    for codec_id, codec in CODEC_REGISTRY.items():
-        result = run_baseline_blockwise(input_path, codec, config.block_size)
-        baselines_blockwise[result["codec_name"]] = result
-
-    # Aggregate ORBIT metrics
-    orbit_metrics = aggregate_block_results(orbit_results)
-
-    # Save and return
-    combined = {
-        "orbit_metrics": orbit_metrics,
-        "baseline_metrics": baseline_metrics,
-        "baselines_blockwise": baselines_blockwise,
-        "regret_curve": regret_curve,
-    }
-
-    codec_snapshot_end = snapshot_registry()
-    if codec_snapshot_end != codec_snapshot_start:
-        raise RuntimeError(
-            "Codec registry mutated during experiment: "
-            f"start={codec_snapshot_start}, end={codec_snapshot_end}"
-        )
-
-    with open(os.path.join(output_dir, "results.json"), "w", encoding="utf-8") as f:
-        json.dump(combined, f, indent=2)
     return combined
 
 
@@ -359,6 +372,7 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
     """
     For each dataset entry and feature_set, run the full pipeline and save results with dataset name and feature_set label.
     """
+    ensure_output_dirs(output_dir)
     import os
     from features.extractor import BlockFeatureExtractor
     from bandit.linucb import LinUCB
@@ -402,8 +416,7 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
             metrics["feature_set_label"] = label
             metrics["dataset_name"] = dataset.name
             results.append(metrics)
-    with open(os.path.join(output_dir, "ablation_results.json"), "w", encoding="utf-8") as f:
-        json.dump(results, f, indent=2)
+    safe_save_json(results, os.path.join(output_dir, "ablation_results.json"))
     return results
 
 
@@ -417,6 +430,8 @@ def run_core_comparison(
     For each DatasetEntry in a manifest, run ORBIT repeated experiments and
     blockwise baselines for every codec, then save a flat comparison table.
     """
+    ensure_output_dirs(output_dir)
+    import os
     from evaluation.dataset import load_dataset_manifest, validate_manifest
     from evaluation.baseline import run_baseline_blockwise
     from evaluation.metrics import throughput_mbps, validate_comparison_record
@@ -570,8 +585,7 @@ def run_core_comparison(
 
     verify_block_size_consistency(config, rows)
 
-    with open(os.path.join(output_dir, "core_comparison.json"), "w", encoding="utf-8") as f:
-        json.dump(rows, f, indent=2)
+    safe_save_json(rows, os.path.join(output_dir, "core_comparison.json"))
 
 
 def run_block_size_sweep(
@@ -584,6 +598,8 @@ def run_block_size_sweep(
     Sweep block sizes and collect repeated-experiment summary metrics.
     Saves results as block_size_sweep.json in output_dir.
     """
+    ensure_output_dirs(output_dir)
+    import os
     import time
     from evaluation.metrics import throughput_mbps
 
@@ -633,8 +649,7 @@ def run_block_size_sweep(
         }
         sweep_rows.append(row)
 
-    with open(os.path.join(output_dir, "block_size_sweep.json"), "w", encoding="utf-8") as f:
-        json.dump(sweep_rows, f, indent=2)
+    safe_save_json(sweep_rows, os.path.join(output_dir, "block_size_sweep.json"))
 
 
 def prepare_table1(core_comparison_path: str, output_path: str) -> None:
@@ -707,8 +722,7 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
         table_rows.append(row)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(table_rows, f, indent=2)
+    safe_save_json(table_rows, output_path)
 
 
 def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> None:
@@ -753,8 +767,7 @@ def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> N
     }
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    safe_save_json(payload, output_path)
 
 
 def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
@@ -809,8 +822,7 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
         table_rows.append(row)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(table_rows, f, indent=2)
+    safe_save_json(table_rows, output_path)
 
 
 def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
@@ -866,8 +878,7 @@ def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
     }
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
+    safe_save_json(payload, output_path)
 
 
 if __name__ == "__main__":
