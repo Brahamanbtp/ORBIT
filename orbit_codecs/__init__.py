@@ -19,10 +19,10 @@ def validate_all_codecs(test_data: bytes = None) -> dict:
 from utils.logging import logger
 
 _adapter_specs = [
-	("LZ4Adapter", "codecs.lz4_adapter", "lz4.frame"),
-	("ZstdAdapter", "codecs.zstd_adapter", "zstandard"),
-	("LZMAAdapter", "codecs.lzma_adapter", None),  # lzma is stdlib
-	("RawAdapter", "codecs.raw_adapter", None),
+	("LZ4Adapter", "orbit_codecs.lz4_adapter", "lz4.frame"),
+	("ZstdAdapter", "orbit_codecs.zstd_adapter", "zstandard"),
+	("LZMAAdapter", "orbit_codecs.lzma_adapter", None),  # lzma is stdlib
+	("RawAdapter", "orbit_codecs.raw_adapter", None),
 ]
 
 _adapters = []
