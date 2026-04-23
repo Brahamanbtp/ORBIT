@@ -1,4 +1,4 @@
-from codecs import get_codec
+from orbit_codecs import get_codec
 from utils.timing import measure_time_ms
 from bandit.reward import compute_reward
 
@@ -71,7 +71,7 @@ class ORBITCompressor:
     def compress_file(self, input_path: str, output_path: str) -> list[dict]:
         import json
         from io.format import write_file_header
-        from codecs import available_codecs
+        from orbit_codecs import available_codecs
         import importlib
 
         reader = StreamingReader(input_path, self.config.block_size)
@@ -112,7 +112,7 @@ class ORBITCompressor:
         n_blocks = 0
         block_size = self.config.block_size
         codec_registry_checksum = 0
-        from codecs import CODEC_REGISTRY
+        from orbit_codecs import CODEC_REGISTRY
         for k in CODEC_REGISTRY.keys():
             codec_registry_checksum ^= k
         # Write header at start

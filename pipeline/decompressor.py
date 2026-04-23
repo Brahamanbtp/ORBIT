@@ -1,4 +1,4 @@
-from codecs import get_codec
+from orbit_codecs import get_codec
 from io.format import ORBIT_MAGIC, read_file_header, read_block_header
 
 
@@ -16,7 +16,7 @@ from io.format import ORBIT_MAGIC, read_file_header, read_block_header
         headers = []
         block_data_pairs = []
         from io.format import BlockHeader  # ensure import for type
-        from codecs import CODEC_REGISTRY
+        from orbit_codecs import CODEC_REGISTRY
         with open(input_path, "rb") as infile:
             file_header = read_file_header(infile)
             if file_header.magic != ORBIT_MAGIC:

@@ -4,7 +4,7 @@ from __future__ import annotations
 def main() -> None:
     # 1) codecs registry and validation import
     try:
-        from codecs import CODEC_REGISTRY, validate_all_codecs
+        from orbit_codecs import CODEC_REGISTRY, validate_all_codecs
 
         codec_names = [type(codec).__name__ for _, codec in sorted(CODEC_REGISTRY.items())]
         print(f"PASS 1: codecs imported; codec names found: {codec_names}")

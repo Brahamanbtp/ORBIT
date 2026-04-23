@@ -1,7 +1,7 @@
 
 def run_pipeline_check() -> bool:
 	try:
-		from codecs.raw_adapter import RawAdapter
+		 from orbit_codecs.raw_adapter import RawAdapter
 		from features.extractor import BlockFeatureExtractor
 		from bandit.linucb import LinUCB
 		from bandit.action_space import ActionSpace

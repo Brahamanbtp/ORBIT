@@ -1,7 +1,7 @@
 from configs.schema import ORBITConfig
 from evaluation.dataset import load_dataset_manifest, preflight_check
 from evaluation.runner import ensure_output_dirs, run_experiment
-from codecs import validate_all_codecs
+from orbit_codecs import validate_all_codecs
 from pipeline import run_pipeline_check
 
 

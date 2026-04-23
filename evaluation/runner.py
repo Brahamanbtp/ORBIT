@@ -165,7 +165,7 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     return agg
 import os
 import json
-from codecs import CODEC_REGISTRY
+from orbit_codecs import CODEC_REGISTRY
 from configs.schema import ORBITConfig
 from pipeline.compressor import ORBITCompressor
 from evaluation.baseline import run_baseline
@@ -193,7 +193,7 @@ def generate_ablation_configs(base_config: ORBITConfig) -> list[tuple[str, list[
 
 def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dict:
     ensure_output_dirs(output_dir)
-    from codecs import validate_all_codecs, snapshot_registry
+    from orbit_codecs import validate_all_codecs, snapshot_registry
     codec_snapshot_start = snapshot_registry()
 
     import random
@@ -265,7 +265,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     if failed:
         raise RuntimeError(f"Codec roundtrip validation failed for: {failed}")
 
-    from codecs import available_codecs, CODEC_REGISTRY
+    from orbit_codecs import available_codecs, CODEC_REGISTRY
     # Assert codec registry matches config
     if len(available_codecs()) != config.n_actions:
         raise RuntimeError(f"Number of available codecs ({len(available_codecs())}) does not match config.n_actions ({config.n_actions}). Available: {available_codecs()}")
