@@ -1,17 +1,17 @@
 - name: mixed_corpus
-  path: /bin/bash
-  size_bytes: 1446024
+  path: /tmp/mixed_corpus.bin
+  size_bytes: 3604950
   content_type: mixed
-  description: "A mixed-type dataset containing text and binary data."
+  description: "Interleaved text and binary data from system files"
 
 - name: text_corpus
-  path: /bin/bash
-  size_bytes: 1446024
-  content_type: mixed
-  description: "A large text-only dataset for compression benchmarking."
+  path: /tmp/text_part.txt
+  size_bytes: 11689
+  content_type: text
+  description: "System documentation text files concatenated"
 
 - name: binary_corpus
   path: /bin/bash
   size_bytes: 1446024
-  content_type: mixed
-  description: "A binary dataset for evaluating non-text compression."
+  content_type: binary
+  description: "ELF binary executable"
