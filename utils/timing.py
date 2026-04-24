@@ -1,6 +1,12 @@
 import time
 from collections import defaultdict
 
+def measure_time_ms(fn, *args, **kwargs):
+    start = time.perf_counter()
+    result = fn(*args, **kwargs)
+    elapsed_ms = (time.perf_counter() - start) * 1000.0
+    return result, elapsed_ms
+
 class TimingContext:
     def __init__(self, label: str):
         self.label = label
