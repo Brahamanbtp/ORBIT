@@ -1,75 +1,80 @@
 from __future__ import annotations
 
 import json
+import math
+from collections import Counter
 from typing import Any
+
+import numpy as np
 
 from core.interfaces import BanditPolicy
 
 
 class PolicyLogger:
-            def compute_normalized_regret(self, total_bytes: int) -> list[float]:
-                """
-                Divide each element of cumulative regret by the running byte sum up to that block.
-                Returns a list of regret per byte, one per block.
-                """
-                cumulative = self.compute_cumulative_regret()
-                running_bytes = 0
-                result = []
-                for i, entry in enumerate(self.log):
-                    block_size = entry.get("original_size") or entry.get("features", {}).get("size") or 1
-                    running_bytes += block_size
-                    val = cumulative[i] / running_bytes if running_bytes > 0 else 0.0
-                    result.append(val)
-                assert len(result) == len(self.log), f"Normalized regret length {len(result)} does not match log length {len(self.log)}"
-                return result
-        self._weight_snapshots: dict[int, dict[int, list[float]]] = {}  # block_id -> {action: weight_vector}
-        def log_weight_snapshot(self, block_id: int) -> None:
-            """
-            For each action, extract the weight vector as A_inv @ b from the wrapped LinUCB instance and store as a dict keyed by block_id.
-            """
-            # Only works if wrapped policy has A and b attributes (LinUCB)
-            policy = self.policy
-            if not (hasattr(policy, "A") and hasattr(policy, "b")):
-                return
-            import numpy as np
-            snapshot = {}
-            for action in range(getattr(policy, "n_actions", len(policy.A))):
-                try:
-                    A_inv = np.linalg.inv(policy.A[action])
-                    b = policy.b[action]
-                    theta = (A_inv @ b).tolist()
-                    snapshot[action] = theta
-                except Exception:
-                    snapshot[action] = None
-            self._weight_snapshots[block_id] = snapshot
+    """Wraps any BanditPolicy to log decisions, rewards, oracle actions, and weight snapshots."""
 
-        def dump_weight_snapshots(self, path: str) -> None:
-            """
-            Write all weight snapshots as JSONL, one per block_id.
-            """
-            with open(path, "w", encoding="utf-8") as fh:
-                for block_id, weights in sorted(self._weight_snapshots.items()):
-                    fh.write(json.dumps({"block_id": block_id, "weights": weights}) + "\n")
     def __init__(self, policy: BanditPolicy) -> None:
         self.policy = policy
         self.log: list[dict[str, Any]] = []
-        self._oracle_actions: dict[int, int] = {}  # block_id -> oracle_action
-        self._oracle_rewards: dict[int, float] = {}  # block_id -> oracle_reward
+        self._oracle_actions: dict[int, int] = {}
+        self._oracle_rewards: dict[int, float] = {}
+        self._weight_snapshots: dict[int, dict[int, list[float]]] = {}
+        self._call_count: int = 0
 
-    def record_oracle_action(self, block_id: int, oracle_action: int, oracle_reward: float = None) -> None:
-        """
-        Record the oracle action (and optionally reward) for a given block_id.
-        """
+    # ------------------------------------------------------------------ #
+    #  BanditPolicy delegation                                           #
+    # ------------------------------------------------------------------ #
+
+    def select_action(self, features, block_id: int = None) -> int:
+        action = self.policy.select_action(features)
+        self._call_count += 1
+
+        effective_block_id = block_id
+
+        # ✅ FIXED indentation bug
+        if (
+            effective_block_id is not None
+            and isinstance(effective_block_id, int)
+            and effective_block_id % 50 == 0
+        ):
+            self.log_weight_snapshot(effective_block_id)
+
+        return action
+
+    def update(self, features, action: int, reward: float, block_id: int = None) -> None:
+        # ✅ Ensure block_id is always provided
+        assert block_id is not None, "block_id must not be None in PolicyLogger.update"
+
+        self.log.append(
+            {
+                "block_id": block_id,
+                "action": int(action),
+                "reward": float(reward),  # ✅ ensured float
+                "features": self._serialize_features(features),
+            }
+        )
+
+        self.policy.update(features, action, reward)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.policy, name)
+
+    # ------------------------------------------------------------------ #
+    #  Oracle recording                                                  #
+    # ------------------------------------------------------------------ #
+
+    def record_oracle_action(
+        self, block_id: int, oracle_action: int, oracle_reward: float = None
+    ) -> None:
         self._oracle_actions[block_id] = oracle_action
         if oracle_reward is not None:
             self._oracle_rewards[block_id] = oracle_reward
 
+    # ------------------------------------------------------------------ #
+    #  Regret computation                                                #
+    # ------------------------------------------------------------------ #
+
     def compute_cumulative_regret(self) -> list[float]:
-        """
-        Compute cumulative regret: sum of (oracle_reward - actual_reward) for each block in log order.
-        If oracle_reward is not available, regret is 0 for that block.
-        Returns a list of cumulative regret values (one per block).
-        """
         cumulative = []
         total = 0.0
         for entry in self.log:
@@ -80,64 +85,92 @@ class PolicyLogger:
             total += regret
             cumulative.append(total)
         return cumulative
-        def compute_convergence_stats(self) -> dict:
-            import math
-            window = 50
-            actions = []
-            rewards = []
-            action_entropy_over_time = []
-            rolling_mean_reward = []
-            from collections import Counter
 
-            for i, entry in enumerate(self.log):
-                actions.append(entry["action"])
-                rewards.append(entry["reward"])
-                # Action entropy up to this point
-                counts = Counter(actions)
-                total = len(actions)
-                probs = [c / total for c in counts.values()]
-                entropy = -sum(p * math.log2(p) for p in probs if p > 0)
-                action_entropy_over_time.append(entropy)
-                # Rolling mean reward
-                start = max(0, i - window + 1)
-                mean = sum(rewards[start:i+1]) / (i - start + 1)
-                rolling_mean_reward.append(mean)
+    def compute_normalized_regret(self, total_bytes: int) -> list[float]:
+        cumulative = self.compute_cumulative_regret()
+        running_bytes = 0
+        result = []
+        for i, entry in enumerate(self.log):
+            block_size = entry.get("original_size") or entry.get("size") or 1
+            running_bytes += block_size
+            val = cumulative[i] / running_bytes if running_bytes > 0 else 0.0
+            result.append(val)
 
-            return {
-                "action_entropy_over_time": action_entropy_over_time,
-                "rolling_mean_reward": rolling_mean_reward,
-            }
-    # ...existing code...
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self.policy, name)
-
-    def select_action(self, features) -> int:
-        # Call wrapped select_action
-        action = self.policy.select_action(features)
-        # Try to get block_id from features
-        block_id = getattr(features, "block_id", None)
-        # Log snapshot every 50 blocks (if block_id is int)
-        if block_id is not None and isinstance(block_id, int) and block_id % 50 == 0:
-            self.log_weight_snapshot(block_id)
-        return action
-
-    def update(self, features, action, reward) -> None:
-        block_id = getattr(features, "block_id", None)
-        self.log.append(
-            {
-                "block_id": block_id,
-                "action": int(action),
-                "reward": float(reward),
-                "features": self._serialize_features(features),
-            }
+        assert len(result) == len(self.log), (
+            f"Normalized regret length {len(result)} != log length {len(self.log)}"
         )
-        self.policy.update(features, action, reward)
+
+        return result
+
+    # ------------------------------------------------------------------ #
+    #  Convergence stats                                                 #
+    # ------------------------------------------------------------------ #
+
+    def compute_convergence_stats(self) -> dict:
+        window = 50
+        actions: list[int] = []
+        rewards: list[float] = []
+        action_entropy_over_time: list[float] = []
+        rolling_mean_reward: list[float] = []
+
+        for i, entry in enumerate(self.log):
+            actions.append(entry["action"])
+            rewards.append(entry["reward"])
+
+            counts = Counter(actions)
+            total = len(actions)
+            probs = [c / total for c in counts.values()]
+            entropy = -sum(p * math.log2(p) for p in probs if p > 0)
+            action_entropy_over_time.append(entropy)
+
+            start = max(0, i - window + 1)
+            mean = sum(rewards[start : i + 1]) / (i - start + 1)
+            rolling_mean_reward.append(mean)
+
+        return {
+            "action_entropy_over_time": action_entropy_over_time,
+            "rolling_mean_reward": rolling_mean_reward,
+        }
+
+    # ------------------------------------------------------------------ #
+    #  Weight snapshots                                                  #
+    # ------------------------------------------------------------------ #
+
+    def log_weight_snapshot(self, block_id: int) -> None:
+        policy = self.policy
+        if not (hasattr(policy, "A") and hasattr(policy, "b")):
+            return
+
+        snapshot = {}
+        n_actions = getattr(policy, "n_actions", len(policy.A))
+
+        for action in range(n_actions):
+            try:
+                A_inv = np.linalg.inv(policy.A[action])
+                theta = (A_inv @ policy.b[action]).tolist()
+                snapshot[action] = theta
+            except Exception:
+                snapshot[action] = None
+
+        self._weight_snapshots[block_id] = snapshot
+
+    def dump_weight_snapshots(self, path: str) -> None:
+        with open(path, "w", encoding="utf-8") as fh:
+            for block_id, weights in sorted(self._weight_snapshots.items()):
+                fh.write(json.dumps({"block_id": block_id, "weights": weights}) + "\n")
+
+    # ------------------------------------------------------------------ #
+    #  Log persistence                                                   #
+    # ------------------------------------------------------------------ #
 
     def dump_log(self, path: str) -> None:
         with open(path, "w", encoding="utf-8") as fh:
             for entry in self.log:
                 fh.write(json.dumps(entry) + "\n")
+
+    # ------------------------------------------------------------------ #
+    #  Helpers                                                           #
+    # ------------------------------------------------------------------ #
 
     @staticmethod
     def _serialize_features(features: Any) -> Any:
