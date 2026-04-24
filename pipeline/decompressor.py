@@ -1,5 +1,5 @@
 from orbit_codecs import get_codec
-from io.format import ORBIT_MAGIC, read_file_header, read_block_header
+from orbit_io.format import ORBIT_MAGIC, read_file_header, read_block_header
 
 
 
