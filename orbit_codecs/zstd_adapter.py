@@ -3,7 +3,7 @@ try:
 except ImportError as exc:
     raise ImportError("zstandard is required for ZstdAdapter. Install the 'zstandard' package to use this codec.") from exc
 
-from codecs.base import CodecAdapter
+from orbit_codecs.base import CodecAdapter
 
 
 class ZstdAdapter(CodecAdapter):

@@ -3,7 +3,7 @@ try:
 except ImportError as exc:
     raise ImportError("lz4.frame is required for LZ4Adapter. Install the 'lz4' package to use this codec.") from exc
 
-from codecs.base import CodecAdapter
+from orbit_codecs.base import CodecAdapter
 
 
 class LZ4Adapter(CodecAdapter):
