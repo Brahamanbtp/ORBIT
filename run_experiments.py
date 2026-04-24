@@ -30,7 +30,7 @@ def main() -> None:
 
     prepare_table1("outputs/core_comparison.json", "outputs/table1.json")
     prepare_regret_plot_data(
-        "outputs/regret_curve_aggregated.json",
+        "outputs/core_mixed_corpus/regret_curve_aggregated.json",
         "outputs/regret_plot_data.json",
     )
     prepare_ablation_table("outputs/ablation_results.json", "outputs/ablation_table.json")
