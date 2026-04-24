@@ -276,10 +276,10 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     from bandit.policy import PolicyLogger
     from features.extractor import BlockFeatureExtractor
     from bandit.action_space import ActionSpace
-    from io.reader import StreamingReader
+    from orbit_io.reader import StreamingReader
     from core.processor import split_into_blocks
     from core.block import Block
-    from evaluation.oracle import compute_oracle_actions
+    from evaluation.oracle import compute_oracle_actions, compute_oracle_rewards
 
     # Setup extractor, policy, action_space
     extractor = BlockFeatureExtractor()
@@ -300,10 +300,18 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     blocks = list(split_into_blocks(reader, config.block_size))
 
     # Compute oracle actions using the same block list (no re-read).
+    from bandit.reward import compute_reward
+    import time
     oracle_actions = compute_oracle_actions(blocks, CODEC_REGISTRY)
+    oracle_rewards = compute_oracle_rewards(blocks, CODEC_REGISTRY)
+    assert len(oracle_rewards) == len(blocks), "oracle_rewards length mismatch"
     for block, oracle_action in zip(blocks, oracle_actions):
-        logger.record_oracle_action(block.block_id, oracle_action)
-
+        logger.record_oracle_action(
+            block.block_id,
+            oracle_action,
+            oracle_reward=oracle_rewards[block.block_id]
+        )
+        
     # Compute regret curve
     regret_curve = logger.compute_cumulative_regret()
 
@@ -361,7 +369,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         )
 
     seed = config.random_seed if getattr(config, "random_seed", None) is not None else "none"
-    regret_path = os.path.join(output_dir, f"regret_curve_run{seed}.json")
+    regret_path = os.path.join(output_dir, f"regret_curve_run{seed if seed is not None else 0}.json")
     safe_save_json(regret_records, regret_path)
 
     return combined
