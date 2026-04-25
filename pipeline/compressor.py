@@ -43,7 +43,7 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     # 2. Bandit decision (select_action with block_id)
     # ------------------------------------------------------------------ #
     with TimingContext("bandit_decision") as t_bandit:
-        action_id = router.policy.select_action(features, block_id=block.block_id)
+        action_id = router.policy.select_action(features)
 
     if timing_acc is not None:
         timing_acc.record(block.block_id, "bandit_decision", t_bandit.elapsed_ms)
@@ -69,12 +69,7 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     # ------------------------------------------------------------------ #
     # 5. Policy update WITH block_id
     # ------------------------------------------------------------------ #
-    router.policy.update(
-        features,
-        action_id,
-        reward,
-        block_id=block.block_id
-    )
+    router.policy.update(features, action_id, reward, block_id=block.block_id)
 
     # ------------------------------------------------------------------ #
     # 6. Logger consistency check
@@ -163,35 +158,26 @@ class ORBITCompressor:
     ) -> None:
         self.config = config
         self.extractor = extractor
+        self.feature_extractor = extractor
         self.policy = policy
         self.action_space = action_space
+        self.last_blocks = []
 
     def compress_file(self, input_path: str, output_path: str) -> list[dict]:
-        # Compute registry checksum
-        codec_registry_checksum = 0
-        for k in CODEC_REGISTRY.keys():
-            codec_registry_checksum ^= k
-
-        # Build codec versions bytes for header
-        codec_versions_bytes = _build_codec_versions()
-
-        # Collect all blocks first so we know n_blocks for the header
         reader = StreamingReader(input_path, self.config.block_size)
         blocks = list(split_into_blocks(reader, self.config.block_size))
-        n_blocks = len(blocks)
+        self.last_blocks = blocks
+        print(f"Total blocks to compress: {len(blocks)}")
 
-        # Use BinaryWriter's own file management — never open file separately
-        router = BlockRouter(self.extractor, self.policy, self.action_space)
         writer = BinaryWriter(output_path)
-        writer.open_file(n_blocks, self.config.block_size)
+        writer.open_file(n_blocks=len(blocks), block_size=self.config.block_size)
 
+        router = BlockRouter(self.feature_extractor, self.policy, self.action_space)
         results: list[dict] = []
-        try:
-            for block in blocks:
-                result = process_block(block, router, self.policy, writer)
-                results.append(result)
-        finally:
-            # Always close — flushes and fsyncs even if an exception occurs
-            writer.close_file()
+        for block in blocks:
+            result = process_block(block, router, self.policy, writer)
+            results.append(result)
+
+        writer.close_file()
 
         return results
