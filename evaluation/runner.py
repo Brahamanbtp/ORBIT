@@ -317,6 +317,10 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         policy_logger.record_oracle_action(block.block_id, oracle_action_id, oracle_reward)
 
     regret_curve = policy_logger.compute_cumulative_regret()
+    rc = regret_curve
+    early_slope = (rc[49] - rc[0]) / 49 if len(rc) > 50 else 0
+    late_slope = (rc[-1] - rc[-51]) / 50 if len(rc) > 50 else 0
+    slope_reduction_pct = (1 - late_slope / early_slope) * 100 if early_slope > 0 else 0
 
 
     # Aggregate ORBIT metrics
@@ -356,6 +360,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "baseline_metrics": baseline_metrics,
         "baselines_blockwise": baselines_blockwise,
         "regret_curve": regret_curve,
+        "regret_slope_reduction_pct": float(slope_reduction_pct),
     }
 
     codec_snapshot_end = snapshot_registry()
