@@ -105,16 +105,19 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
                 vals.append(val)
         return vals
 
-    compression_ratios = collect_metric(all_results, ["orbit_metrics", "compression_ratio"])
+    compression_ratios = collect_metric(all_results, ["orbit_metrics", "mean_compression_ratio"])
     mean_rewards = collect_metric(all_results, ["orbit_metrics", "mean_reward"])
     regret_curves = collect_metric(all_results, ["regret_curve"])
 
     # Compute mean/std for scalar metrics
     agg = {
-        "compression_ratio_mean": float(np.mean(compression_ratios)) if compression_ratios else None,
-        "compression_ratio_std": float(np.std(compression_ratios)) if compression_ratios else None,
-        "mean_reward_mean": float(np.mean(mean_rewards)) if mean_rewards else None,
-        "mean_reward_std": float(np.std(mean_rewards)) if mean_rewards else None,
+        "compression_ratio_mean": float(np.mean(compression_ratios)) if compression_ratios else 0.0,
+        "compression_ratio_std": float(np.std(compression_ratios)) if compression_ratios else 0.0,
+        "mean_reward_mean": float(np.mean(mean_rewards)) if mean_rewards else 0.0,
+        "mean_reward_std": float(np.std(mean_rewards)) if mean_rewards else 0.0,
+        "n_runs": int(n_runs),
+        "input_path": str(input_path),
+        "block_size": int(config.block_size),
     }
 
     # Compute mean/std for regret_curve (element-wise)
@@ -166,10 +169,13 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
 import os
 import json
 from orbit_codecs import CODEC_REGISTRY
+from orbit_codecs.base import CodecAdapter
+from bandit.reward import compute_reward
 from configs.schema import ORBITConfig
 from pipeline.compressor import ORBITCompressor
 from evaluation.baseline import run_baseline
 from evaluation.metrics import aggregate_block_results
+from evaluation.oracle import compute_oracle_stats
 
 
 def generate_ablation_configs(base_config: ORBITConfig) -> list[tuple[str, list[str]]]:
@@ -276,48 +282,60 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     from bandit.policy import PolicyLogger
     from features.extractor import BlockFeatureExtractor
     from bandit.action_space import ActionSpace
+    from core.block import Block
     from orbit_io.reader import StreamingReader
     from core.processor import split_into_blocks
-    from core.block import Block
-    from evaluation.oracle import compute_oracle_actions, compute_oracle_rewards
+    from evaluation.oracle import compute_oracle_actions
 
     # Setup extractor, policy, action_space
     extractor = BlockFeatureExtractor()
     policy = LinUCB(n_actions=config.n_actions, feature_dim=extractor.feature_dim, alpha=config.alpha)
     logger = PolicyLogger(policy)
-    action_space = ActionSpace([k for k in CODEC_REGISTRY.keys()])
+    policy_logger = logger
+    action_space = ActionSpace([
+        CODEC_REGISTRY[k].__class__.__name__ for k in sorted(CODEC_REGISTRY.keys())
+    ])
     compressor = ORBITCompressor(config, extractor, logger, action_space)
 
     # Run ORBIT pipeline
-    orbit_results = []
-    try:
-        orbit_results = compressor.compress_file(input_path, os.path.join(output_dir, "orbit_output.bin"))
-    except Exception:
-        pass
+    block_results = compressor.compress_file(
+        input_path, os.path.join(output_dir, "orbit_output.bin")
+    )
 
-    # Read all blocks once for oracle computation (no re-read for oracle itself).
+    print(f"Blocks processed: {len(block_results)}")
+
     reader = StreamingReader(input_path, config.block_size)
     blocks = list(split_into_blocks(reader, config.block_size))
 
-    # Compute oracle actions using the same block list (no re-read).
-    from bandit.reward import compute_reward
-    import time
     oracle_actions = compute_oracle_actions(blocks, CODEC_REGISTRY)
-    oracle_rewards = compute_oracle_rewards(blocks, CODEC_REGISTRY)
-    assert len(oracle_rewards) == len(blocks), "oracle_rewards length mismatch"
-    for block, oracle_action in zip(blocks, oracle_actions):
-        logger.record_oracle_action(
-            block.block_id,
-            oracle_action,
-            oracle_reward=oracle_rewards[block.block_id]
-        )
-        
-    # Compute regret curve
-    regret_curve = logger.compute_cumulative_regret()
+
+    for i, block in enumerate(blocks):
+        oracle_action_id = oracle_actions[i]
+        codec = CODEC_REGISTRY[oracle_action_id]
+        oracle_compressed = codec.compress(block.data)
+        oracle_reward = compute_reward(block.size, len(oracle_compressed), 0.0)
+        policy_logger.record_oracle_action(block.block_id, oracle_action_id, oracle_reward)
+
+    regret_curve = policy_logger.compute_cumulative_regret()
 
 
     # Aggregate ORBIT metrics
-    orbit_metrics = aggregate_block_results(orbit_results)
+    orbit_metrics = aggregate_block_results(block_results)
+    if block_results:
+        burn_in = int(len(block_results) * 0.25)
+        converged_results = block_results[burn_in:]
+        if converged_results:
+            orbit_metrics["converged_ratio"] = float(
+                sum(
+                    r["compressed_size"] / r["original_size"]
+                    for r in converged_results
+                    if r["original_size"] > 0
+                ) / len(converged_results)
+            )
+        else:
+            orbit_metrics["converged_ratio"] = 0.0
+    else:
+        orbit_metrics["converged_ratio"] = 0.0
 
     # Run baselines for all codecs (full-file)
     baseline_metrics = {}
@@ -347,10 +365,18 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
             f"start={codec_snapshot_start}, end={codec_snapshot_end}"
         )
 
+    ensure_output_dirs(output_dir)
+    policy_logger.dump_log(
+        os.path.join(output_dir, "logs", "policy_log.jsonl")
+    )
+    policy_logger.dump_weight_snapshots(
+        os.path.join(output_dir, "logs", "weight_snapshots.jsonl")
+    )
+
     safe_save_json(combined, os.path.join(output_dir, "results.json"))
 
     # Save normalized regret curve for this run.
-    total_bytes = sum(r.get("original_size", 0) for r in orbit_results)
+    total_bytes = sum(r.get("original_size", 0) for r in block_results)
     normalized_regret_curve = logger.compute_normalized_regret(total_bytes)
     regret_records = []
     for idx, entry in enumerate(logger.log):
@@ -376,7 +402,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
 
 
-def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[str]]) -> list[dict]:
+def run_ablation_study(input_path_or_entries: str | list, output_dir: str, feature_sets: list[list[str]]) -> list[dict]:
     """
     For each dataset entry and feature_set, run the full pipeline and save results with dataset name and feature_set label.
     """
@@ -389,22 +415,38 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
     from pipeline.compressor import ORBITCompressor
     from evaluation.metrics import aggregate_block_results
 
+    if isinstance(input_path_or_entries, str):
+        from evaluation.dataset import DatasetEntry
+        datasets = [DatasetEntry(
+            name="default", path=input_path_or_entries,
+            size_bytes=0, content_type="mixed", description=""
+        )]
+    else:
+        datasets = input_path_or_entries
+
     os.makedirs(output_dir, exist_ok=True)
     config = ORBITConfig.load_yaml("configs/default.yaml")
     _ = feature_sets
     ablation_configs = generate_ablation_configs(config)
     results = []
-    for dataset in datasets:
+    for entry in datasets:
         for label, feature_set in ablation_configs:
-            extractor = BlockFeatureExtractor(enabled_features=feature_set)
-            policy = LinUCB(n_actions=config.n_actions, feature_dim=len(feature_set), alpha=config.alpha)
-            action_space = ActionSpace(["raw", "lz4", "zstd", "lzma"][:config.n_actions])
-            compressor = ORBITCompressor(config, extractor, policy, action_space)
             try:
-                orbit_results = compressor.compress_file(dataset.path, os.path.join(output_dir, f"orbit_{dataset.name}_{label.replace('+', '_')}.bin"))
-            except Exception:
-                orbit_results = []
-            metrics = aggregate_block_results(orbit_results)
+                extractor = BlockFeatureExtractor(enabled_features=feature_set)
+                print(f"Running ablation: {label} (feature_dim={extractor.feature_dim})")
+                policy = LinUCB(n_actions=config.n_actions, feature_dim=len(feature_set), alpha=config.alpha)
+                action_space = ActionSpace(["raw", "lz4", "zstd", "lzma"][:config.n_actions])
+                compressor = ORBITCompressor(config, extractor, policy, action_space)
+                orbit_results = compressor.compress_file(entry.path, os.path.join(output_dir, f"orbit_{entry.name}_{label.replace('+', '_')}.bin"))
+            except Exception as exc:
+                print(f"Ablation failed for feature_set '{label}': {exc}")
+                continue
+            agg = aggregate_block_results(orbit_results)
+            metrics = dict(agg) if isinstance(agg, dict) else {}
+            ratio = agg.get("mean_compression_ratio", None) if isinstance(agg, dict) else None
+            reward = agg.get("mean_reward", None) if isinstance(agg, dict) else None
+            metrics["compression_ratio"] = float(ratio) if ratio is not None else 0.0
+            metrics["mean_reward"] = float(reward) if reward is not None else 0.0
             codec_counts = metrics.get("codec_selection_counts", {})
             total_actions = sum(codec_counts.values())
             if total_actions > 0:
@@ -418,11 +460,10 @@ def run_ablation_study(datasets: list, output_dir: str, feature_sets: list[list[
             else:
                 codec_selection_entropy = 0.0
 
-            metrics["compression_ratio"] = float(metrics.get("mean_compression_ratio", 0.0))
             metrics["codec_selection_entropy"] = codec_selection_entropy
             metrics["feature_set"] = list(feature_set)
             metrics["feature_set_label"] = label
-            metrics["dataset_name"] = dataset.name
+            metrics["dataset_name"] = entry.name
             results.append(metrics)
     safe_save_json(results, os.path.join(output_dir, "ablation_results.json"))
     return results
@@ -609,7 +650,7 @@ def run_block_size_sweep(
     ensure_output_dirs(output_dir)
     import os
     import time
-    from evaluation.metrics import throughput_mbps
+    from evaluation.metrics import throughput_mbps, estimate_convergence_block
 
     os.makedirs(output_dir, exist_ok=True)
     sizes = block_sizes if block_sizes is not None else [1024, 4096, 16384, 65536]
@@ -631,29 +672,24 @@ def run_block_size_sweep(
         )
         elapsed_ms = (time.time() - start) * 1000.0
 
-        compression_ratio_mean = repeated.get("compression_ratio_mean")
-        if compression_ratio_mean is None:
-            all_results = repeated.get("all_results", [])
-            ratios = []
-            for run_result in all_results:
-                orbit_metrics = run_result.get("orbit_metrics", {})
-                if orbit_metrics.get("mean_compression_ratio") is not None:
-                    ratios.append(float(orbit_metrics["mean_compression_ratio"]))
-            compression_ratio_mean = float(np.mean(ratios)) if ratios else None
+        result = repeated
+        ratio = result.get("compression_ratio_mean") or result.get("compression_ratio", 0.0)
+        if (ratio is None or ratio == 0.0) and result.get("compression_ratio_mean") is not None:
+            ratio = result.get("compression_ratio_mean")
 
         regret_curve = repeated.get("regret_curve_mean", []) or []
-        regret_convergence_block = None
-        for idx in range(1, len(regret_curve)):
-            slope = float(regret_curve[idx]) - float(regret_curve[idx - 1])
-            if abs(slope) < 0.001:
-                regret_convergence_block = idx
-                break
+        convergence_idx = estimate_convergence_block(
+            regret_curve,
+            window=100,
+            threshold=0.0001,
+        )
+        regret_convergence_block = convergence_idx if convergence_idx >= 0 else None
 
         row = {
             "block_size": int(block_size),
-            "compression_ratio_mean": float(compression_ratio_mean) if compression_ratio_mean is not None else None,
-            "regret_convergence_block": regret_convergence_block,
+            "mean_compression_ratio": float(ratio) if ratio is not None else 0.0,
             "throughput_mbps": float(throughput_mbps(input_bytes * 3, elapsed_ms)),
+            "regret_convergence_block": regret_convergence_block,
         }
         sweep_rows.append(row)
 
@@ -792,10 +828,8 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     rows = [rec for rec in records if isinstance(rec, dict)]
 
     def _compression_ratio(rec: dict) -> float:
-        value = rec.get("compression_ratio")
-        if value is None:
-            value = rec.get("mean_compression_ratio")
-        return float(value) if value is not None else float("-inf")
+        ratio = rec.get("compression_ratio") or rec.get("mean_compression_ratio", 0.0)
+        return float(ratio)
 
     # Full-feature config is the all-three-features subset.
     full_features_ratio = None
@@ -803,9 +837,7 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     for rec in rows:
         feature_set = rec.get("feature_set", [])
         if isinstance(feature_set, list) and set(feature_set) == full_set:
-            ratio = rec.get("compression_ratio")
-            if ratio is None:
-                ratio = rec.get("mean_compression_ratio")
+            ratio = rec.get("compression_ratio") or rec.get("mean_compression_ratio", 0.0)
             if ratio is not None:
                 full_features_ratio = float(ratio)
                 break
@@ -815,9 +847,7 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     table_rows: list[dict] = []
     for idx, rec in enumerate(sorted_rows, start=1):
         row = dict(rec)
-        ratio = row.get("compression_ratio")
-        if ratio is None:
-            ratio = row.get("mean_compression_ratio")
+        ratio = row.get("compression_ratio") or row.get("mean_compression_ratio", 0.0)
         ratio_val = float(ratio) if ratio is not None else None
 
         row["rank"] = idx
