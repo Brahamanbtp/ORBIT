@@ -1,17 +1,17 @@
 - name: mixed_corpus
-  path: /tmp/mixed_corpus.bin
-  size_bytes: 1519616
+  path: /workspaces/ORBIT/data/mixed_corpus.bin
+  size_bytes: 20971520
   content_type: mixed
-  description: Mixed binary and text corpus for ORBIT evaluation — 371 blocks, entropy range 0.38–7.97
+  description: Mixed binary and text corpus interleaved in 512KB chunks
 
 - name: text_corpus
-  path: /tmp/text_part.txt
-  size_bytes: 1200000
+  path: /workspaces/ORBIT/data/text_corpus.txt
+  size_bytes: 10000000
   content_type: text
-  description: Text-only corpus — repetitive compressible text
+  description: Text-only corpus ASCII characters
 
 - name: binary_corpus
-  path: /tmp/binary_part.bin
-  size_bytes: 1000000
+  path: /workspaces/ORBIT/data/binary_corpus.bin
+  size_bytes: 10485760
   content_type: binary
-  description: Random incompressible binary corpus
+  description: Random binary corpus
