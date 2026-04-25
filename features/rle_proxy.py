@@ -10,6 +10,5 @@ def compute_rle_ratio(data: bytes) -> float:
             runs += 1
             prev = byte
 
-    encoded_length = runs * 2
-    ratio = encoded_length / len(data)
+    ratio = runs / len(data)
     return float(min(1.0, max(0.0, ratio)))
