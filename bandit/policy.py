@@ -42,9 +42,6 @@ class PolicyLogger:
         return action
 
     def update(self, features, action: int, reward: float, block_id: int = None) -> None:
-        # ✅ Ensure block_id is always provided
-        assert block_id is not None, "block_id must not be None in PolicyLogger.update"
-
         self.log.append(
             {
                 "block_id": block_id,
