@@ -1,17 +1,17 @@
 - name: mixed_corpus
   path: /tmp/mixed_corpus.bin
-  size_bytes: 3604950
+  size_bytes: 1519616
   content_type: mixed
-  description: "Interleaved text and binary data from system files"
+  description: Mixed binary and text corpus for ORBIT evaluation — 371 blocks, entropy range 0.38–7.97
 
 - name: text_corpus
   path: /tmp/text_part.txt
-  size_bytes: 11689
+  size_bytes: 1200000
   content_type: text
-  description: "System documentation text files concatenated"
+  description: Text-only corpus — repetitive compressible text
 
 - name: binary_corpus
-  path: /bin/bash
-  size_bytes: 1446024
+  path: /tmp/binary_part.bin
+  size_bytes: 1000000
   content_type: binary
-  description: "ELF binary executable"
+  description: Random incompressible binary corpus
