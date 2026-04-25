@@ -7,7 +7,7 @@ from core.interfaces import BanditPolicy
 
 
 class LinUCB(BanditPolicy):
-    def __init__(self, n_actions: int, feature_dim: int, alpha: float, random_seed=None, feature_extractor=None, burn_in_blocks: int = 20) -> None:
+    def __init__(self, n_actions: int, feature_dim: int, alpha: float, random_seed=None, feature_extractor=None, burn_in_blocks: int = 10) -> None:
         self.n_actions = n_actions
         self.feature_dim = feature_dim
         self.alpha = alpha
@@ -38,7 +38,7 @@ class LinUCB(BanditPolicy):
             scores[action] = x @ theta + self.alpha * exploration
         return int(np.argmax(scores))
 
-    def update(self, features, action, reward) -> None:
+    def update(self, features, action, reward, block_id=None) -> None:
         x = np.asarray(features, dtype=float).reshape(-1)
         self.A[action] = self.A[action] + np.outer(x, x)
         self.b[action] = self.b[action] + reward * x
