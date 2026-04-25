@@ -25,7 +25,7 @@ class BanditPolicy(ABC):
         ...
 
     @abstractmethod
-    def update(self, features: Any, action: int, reward: float) -> None:
+    def update(self, features: Any, action: int, reward: float, block_id=None) -> None:
         ...
 
 
