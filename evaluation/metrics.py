@@ -149,6 +149,7 @@ def estimate_convergence_block(
     regret_curve: list[float],
     window: int = 50,
     threshold: float = 0.001,
+    skip_blocks: int = 20,
 ) -> int:
     """
     Estimate convergence block as the first index where rolling slope drops below threshold.
@@ -158,16 +159,25 @@ def estimate_convergence_block(
 
     if not regret_curve:
         return -1
+
+    if skip_blocks < 0:
+        skip_blocks = 0
+
+    if skip_blocks >= len(regret_curve):
+        return -1
+
+    curve = regret_curve[skip_blocks:]
+
     if window <= 1 or len(regret_curve) < window:
         return -1
 
-    y = np.array(regret_curve, dtype=float)
+    y = np.array(curve, dtype=float)
     x = np.arange(window, dtype=float)
 
     for start in range(0, len(y) - window + 1):
         segment = y[start : start + window]
         slope = float(np.polyfit(x, segment, 1)[0])
         if slope < threshold:
-            return start + window - 1
+            return skip_blocks + start + window - 1
 
     return -1
