@@ -31,19 +31,14 @@ def compress_block(block, codec_id: int) -> tuple[bytes, float]:
 
 def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     # ------------------------------------------------------------------ #
-    # 1. Feature extraction (router.route equivalent split in your design)
-    # ------------------------------------------------------------------ #
-    with TimingContext("feature_extraction") as t_feat:
-        features = router.extractor.extract(block)
-
-    if timing_acc is not None:
-        timing_acc.record(block.block_id, "feature_extraction", t_feat.elapsed_ms)
-
-    # ------------------------------------------------------------------ #
-    # 2. Bandit decision (select_action with block_id)
+    # 1. Route block (feature extraction + action selection)
     # ------------------------------------------------------------------ #
     with TimingContext("bandit_decision") as t_bandit:
-        action_id = router.policy.select_action(features)
+        action_id, features = router.route(block)
+    feature_extraction_ms = 0.0
+
+    if timing_acc is not None:
+        timing_acc.record(block.block_id, "feature_extraction", feature_extraction_ms)
 
     if timing_acc is not None:
         timing_acc.record(block.block_id, "bandit_decision", t_bandit.elapsed_ms)
@@ -69,7 +64,7 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     # ------------------------------------------------------------------ #
     # 5. Policy update WITH block_id
     # ------------------------------------------------------------------ #
-    router.policy.update(features, action_id, reward, block_id=block.block_id)
+    policy.update(features, action_id, reward)
 
     # ------------------------------------------------------------------ #
     # 6. Logger consistency check
@@ -109,7 +104,7 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
         "reward": float(reward),
         "original_size": len(block.data),
         "compressed_size": len(compressed_bytes),
-        "feature_extraction_ms": t_feat.elapsed_ms,
+        "feature_extraction_ms": feature_extraction_ms,
         "bandit_decision_ms": t_bandit.elapsed_ms,
         "compression_ms": t_comp.elapsed_ms,
     }
