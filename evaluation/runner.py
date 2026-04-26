@@ -325,6 +325,17 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # Aggregate ORBIT metrics
     orbit_metrics = aggregate_block_results(block_results)
+    total_original_bytes = float(orbit_metrics.get("total_original_bytes", 0.0) or 0.0)
+    total_elapsed_seconds = (
+        sum(float(r.get("compression_ms", 0.0)) for r in block_results) / 1000.0
+        if block_results
+        else 0.0
+    )
+    orbit_throughput_mbps = (
+        (total_original_bytes / 1e6) / total_elapsed_seconds
+        if total_elapsed_seconds > 0.0
+        else 0.0
+    )
     if block_results:
         burn_in = int(len(block_results) * 0.25)
         converged_results = block_results[burn_in:]
@@ -361,6 +372,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "baselines_blockwise": baselines_blockwise,
         "regret_curve": regret_curve,
         "regret_slope_reduction_pct": float(slope_reduction_pct),
+        "orbit_throughput_mbps": float(orbit_throughput_mbps),
     }
 
     codec_snapshot_end = snapshot_registry()
@@ -740,6 +752,8 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
                 tp_val = rec.get("throughput_mbps")
                 if tp_val is None:
                     tp_val = rec.get("throughput_mbps_mean")
+                if tp_val is None and str(method_name).lower() == "orbit":
+                    tp_val = rec.get("orbit_throughput_mbps")
                 if tp_val is not None:
                     throughput_vals.append(float(tp_val))
 
@@ -836,33 +850,42 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
         ratio = rec.get("compression_ratio") or rec.get("mean_compression_ratio", 0.0)
         return float(ratio)
 
-    # Full-feature config is the all-three-features subset.
-    full_features_ratio = None
-    full_set = {"entropy", "rle_ratio", "repetition"}
+    grouped_rows: dict[str, list[dict]] = {}
     for rec in rows:
-        feature_set = rec.get("feature_set", [])
-        if isinstance(feature_set, list) and set(feature_set) == full_set:
-            ratio = rec.get("compression_ratio") or rec.get("mean_compression_ratio", 0.0)
-            if ratio is not None:
-                full_features_ratio = float(ratio)
+        dataset_name = str(rec.get("dataset_name", "unknown"))
+        grouped_rows.setdefault(dataset_name, []).append(rec)
+
+    table_rows: dict[str, list[dict]] = {}
+    full_set = {"entropy", "rle_ratio", "repetition"}
+    full_set_label = "entropy+repetition+rle_ratio"
+
+    for dataset_name, dataset_rows in grouped_rows.items():
+        full_features_ratio = None
+        for rec in dataset_rows:
+            feature_set = rec.get("feature_set", [])
+            feature_set_label = rec.get("feature_set_label")
+            is_full_by_list = isinstance(feature_set, list) and set(feature_set) == full_set
+            is_full_by_label = str(feature_set_label) == full_set_label
+            if is_full_by_list or is_full_by_label:
+                full_features_ratio = _compression_ratio(rec)
                 break
 
-    sorted_rows = sorted(rows, key=_compression_ratio, reverse=True)
+        sorted_rows = sorted(dataset_rows, key=_compression_ratio)
+        ranked_rows: list[dict] = []
+        for idx, rec in enumerate(sorted_rows, start=1):
+            row = dict(rec)
+            ratio_val = _compression_ratio(row)
 
-    table_rows: list[dict] = []
-    for idx, rec in enumerate(sorted_rows, start=1):
-        row = dict(rec)
-        ratio = row.get("compression_ratio") or row.get("mean_compression_ratio", 0.0)
-        ratio_val = float(ratio) if ratio is not None else None
+            row["rank"] = idx
+            row["delta_vs_full_features"] = (
+                float(ratio_val - full_features_ratio)
+                if full_features_ratio is not None
+                else None
+            )
+            row["is_best"] = idx == 1
+            ranked_rows.append(row)
 
-        row["rank"] = idx
-        row["delta_vs_full_features"] = (
-            float(ratio_val - full_features_ratio)
-            if ratio_val is not None and full_features_ratio is not None
-            else None
-        )
-        row["is_best"] = idx == 1
-        table_rows.append(row)
+        table_rows[dataset_name] = ranked_rows
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     safe_save_json(table_rows, output_path)
