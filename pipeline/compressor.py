@@ -100,7 +100,7 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
         "block_id": block.block_id,
         "action_id": action_id,
         "reward": float(reward),
-        "original_size": len(block.data),
+        "original_size": block.size,
         "compressed_size": len(compressed_bytes),
         "feature_extraction_ms": feature_extraction_ms,
         "bandit_decision_ms": t_bandit.elapsed_ms,
