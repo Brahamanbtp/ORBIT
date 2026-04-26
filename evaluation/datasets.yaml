@@ -1,6 +1,6 @@
 - name: mixed_corpus
   path: /workspaces/ORBIT/data/mixed_corpus.bin
-  size_bytes: 20971520
+  size_bytes: 20485760
   content_type: mixed
   description: Mixed binary and text corpus interleaved in 512KB chunks
 
