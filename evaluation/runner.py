@@ -105,16 +105,34 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
                 vals.append(val)
         return vals
 
-    compression_ratios = collect_metric(all_results, ["orbit_metrics", "mean_compression_ratio"])
-    mean_rewards = collect_metric(all_results, ["orbit_metrics", "mean_reward"])
+    ratios = [
+        r.get("mean_compression_ratio")
+        if r.get("mean_compression_ratio") is not None
+        else r.get("orbit_metrics", {}).get("mean_compression_ratio")
+        for r in all_results
+    ]
+    ratios = [v for v in ratios if v is not None]
+    compression_ratio_mean = float(np.mean(ratios)) if ratios else None
+    compression_ratio_std = float(np.std(ratios)) if ratios else None
+
+    rewards = [
+        r.get("mean_reward")
+        if r.get("mean_reward") is not None
+        else r.get("orbit_metrics", {}).get("mean_reward")
+        for r in all_results
+    ]
+    rewards = [v for v in rewards if v is not None]
+    mean_reward_mean = float(np.mean(rewards)) if rewards else None
+    mean_reward_std = float(np.std(rewards)) if rewards else None
+
     regret_curves = collect_metric(all_results, ["regret_curve"])
 
     # Compute mean/std for scalar metrics
     agg = {
-        "compression_ratio_mean": float(np.mean(compression_ratios)) if compression_ratios else 0.0,
-        "compression_ratio_std": float(np.std(compression_ratios)) if compression_ratios else 0.0,
-        "mean_reward_mean": float(np.mean(mean_rewards)) if mean_rewards else 0.0,
-        "mean_reward_std": float(np.std(mean_rewards)) if mean_rewards else 0.0,
+        "compression_ratio_mean": compression_ratio_mean,
+        "compression_ratio_std": compression_ratio_std,
+        "mean_reward_mean": mean_reward_mean,
+        "mean_reward_std": mean_reward_std,
         "n_runs": int(n_runs),
         "input_path": str(input_path),
         "block_size": int(config.block_size),
@@ -174,7 +192,7 @@ from bandit.reward import compute_reward
 from configs.schema import ORBITConfig
 from pipeline.compressor import ORBITCompressor
 from evaluation.baseline import run_baseline
-from evaluation.metrics import aggregate_block_results
+from evaluation.metrics import aggregate_block_results, compression_ratio
 from evaluation.oracle import compute_oracle_stats
 
 
@@ -342,7 +360,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         if converged_results:
             orbit_metrics["converged_ratio"] = float(
                 sum(
-                    r["compressed_size"] / r["original_size"]
+                    compression_ratio(r["original_size"], r["compressed_size"])
                     for r in converged_results
                     if r["original_size"] > 0
                 ) / len(converged_results)
@@ -367,10 +385,15 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # Save and return
     combined = {
+        "mean_compression_ratio": orbit_metrics.get("mean_compression_ratio"),
+        "mean_reward": orbit_metrics.get("mean_reward"),
+        "total_original_bytes": orbit_metrics.get("total_original_bytes"),
+        "total_compressed_bytes": orbit_metrics.get("total_compressed_bytes"),
+        "codec_selection_counts": orbit_metrics.get("codec_selection_counts"),
+        "regret_curve": regret_curve,
         "orbit_metrics": orbit_metrics,
         "baseline_metrics": baseline_metrics,
         "baselines_blockwise": baselines_blockwise,
-        "regret_curve": regret_curve,
         "regret_slope_reduction_pct": float(slope_reduction_pct),
         "orbit_throughput_mbps": float(orbit_throughput_mbps),
     }
@@ -415,7 +438,10 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
     regret_path = os.path.join(output_dir, f"regret_curve_run{seed if seed is not None else 0}.json")
     safe_save_json(regret_records, regret_path)
 
-    return combined
+    return_payload = dict(combined)
+    return_payload["dataset_name"] = os.path.splitext(os.path.basename(input_path))[0]
+    return_payload["dataset_path"] = input_path
+    return return_payload
 
 
 
@@ -558,7 +584,7 @@ def run_core_comparison(
             total_original = orbit_metrics.get("total_original_bytes")
             total_compressed = orbit_metrics.get("total_compressed_bytes")
             if total_original:
-                return float(total_compressed) / float(total_original)
+                return compression_ratio(int(total_original), int(total_compressed))
 
         return None
 
