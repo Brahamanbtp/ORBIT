@@ -48,7 +48,7 @@ def validate_comparison_record(record: dict) -> list[str]:
 
 
 def compression_ratio(original: int, compressed: int) -> float:
-    if original == 0:
+    if compressed == 0:
         return 0.0
     return compressed / original
 
@@ -75,15 +75,33 @@ def aggregate_block_results(results: list[dict]) -> dict:
     if not results:
         return {
             "mean_compression_ratio": 0.0,
+            "compression_ratio": 0.0,
             "codec_selection_counts": {},
             "mean_reward": 0.0,
             "total_original_bytes": 0,
             "total_compressed_bytes": 0,
         }
+
+    expected_keys = ["block_id", "action_id", "reward", "original_size", "compressed_size"]
+    actual_keys = list(results[0].keys()) if isinstance(results[0], dict) else []
+    missing_keys = [k for k in expected_keys if k not in actual_keys]
+    if missing_keys:
+        print(
+            f"WARNING: missing keys in block results: {missing_keys} — found keys: {actual_keys}"
+        )
+        return {
+            "mean_compression_ratio": None,
+            "compression_ratio": None,
+            "codec_selection_counts": None,
+            "mean_reward": None,
+            "total_original_bytes": None,
+            "total_compressed_bytes": None,
+        }
+
     total_original = sum(r["original_size"] for r in results)
     total_compressed = sum(r["compressed_size"] for r in results)
     mean_compression_ratio = (
-        sum(r["compressed_size"] / r["original_size"] for r in results if r["original_size"] > 0) / len(results)
+        sum(r["original_size"] / r["compressed_size"] for r in results if r["compressed_size"] > 0) / len(results)
     )
     codec_selection_counts = {}
     for r in results:
@@ -92,6 +110,7 @@ def aggregate_block_results(results: list[dict]) -> dict:
     mean_reward = sum(r["reward"] for r in results) / len(results)
     return {
         "mean_compression_ratio": mean_compression_ratio,
+        "compression_ratio": mean_compression_ratio,
         "codec_selection_counts": codec_selection_counts,
         "mean_reward": mean_reward,
         "total_original_bytes": total_original,
