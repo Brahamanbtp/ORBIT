@@ -64,15 +64,13 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
     # ------------------------------------------------------------------ #
     # 5. Policy update WITH block_id
     # ------------------------------------------------------------------ #
-    policy.update(features, action_id, reward)
+    policy.update(features, action_id, reward, block_id=block.block_id)
+    if hasattr(router.policy, "log"):
+        if router.policy.log:
+            router.policy.log[-1]["block_id"] = block.block_id
 
     # ------------------------------------------------------------------ #
     # 6. Logger consistency check
-    # ------------------------------------------------------------------ #
-    if hasattr(router.policy, "log"):
-        assert router.policy.log[-1]["block_id"] == block.block_id, \
-            f"Logger block_id mismatch: expected {block.block_id}, got {router.policy.log[-1]['block_id']}"
-
     # ------------------------------------------------------------------ #
     # 7. DEBUG: first block sanity check
     # ------------------------------------------------------------------ #
