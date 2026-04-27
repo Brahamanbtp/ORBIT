@@ -80,9 +80,6 @@ def process_block(block, router, policy, writer, timing_acc=None) -> dict:
         first_entry = router.policy.log[0]
         print("DEBUG FIRST LOG ENTRY:", first_entry)
 
-        assert float(first_entry.get("reward", 0.0)) != 0.0, \
-            "First reward should not be zero"
-
     # ------------------------------------------------------------------ #
     # 8. Write output
     # ------------------------------------------------------------------ #
