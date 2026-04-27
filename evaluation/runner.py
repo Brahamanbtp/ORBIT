@@ -346,6 +346,10 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # Aggregate ORBIT metrics
     orbit_metrics = aggregate_block_results(block_results)
+    mean_cr = orbit_metrics.get("mean_compression_ratio")
+    orbit_metrics["space_saving_pct"] = (
+        float((1.0 - float(mean_cr)) * 100.0) if mean_cr is not None else None
+    )
     total_original_bytes = float(orbit_metrics.get("total_original_bytes", 0.0) or 0.0)
     total_elapsed_seconds = (
         sum(float(r.get("compression_ms", 0.0)) for r in block_results) / 1000.0
@@ -386,6 +390,24 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         result = run_baseline_blockwise(input_path, codec, config.block_size)
         baselines_blockwise[result["codec_name"]] = result
 
+    baseline_ratios = [
+        float(v.get("compression_ratio"))
+        for v in baselines_blockwise.values()
+        if isinstance(v, dict) and v.get("compression_ratio") is not None
+    ]
+    best_baseline_ratio = min(baseline_ratios) if baseline_ratios else None
+    orbit_compression_ratio = orbit_metrics.get("mean_compression_ratio")
+    orbit_gain_vs_best_baseline = (
+        float(best_baseline_ratio - orbit_compression_ratio)
+        if best_baseline_ratio is not None and orbit_compression_ratio is not None
+        else None
+    )
+    orbit_gain_pct = (
+        float(orbit_gain_vs_best_baseline * 100.0)
+        if orbit_gain_vs_best_baseline is not None
+        else None
+    )
+
     # Save and return
     combined = {
         "mean_compression_ratio": orbit_metrics.get("mean_compression_ratio"),
@@ -398,6 +420,9 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "orbit_metrics": orbit_metrics,
         "baseline_metrics": baseline_metrics,
         "baselines_blockwise": baselines_blockwise,
+        "best_baseline_ratio": best_baseline_ratio,
+        "orbit_gain_vs_best_baseline": orbit_gain_vs_best_baseline,
+        "orbit_gain_pct": orbit_gain_pct,
         "regret_slope_reduction_pct": float(slope_reduction_pct),
         "orbit_throughput_mbps": float(orbit_throughput_mbps),
     }
