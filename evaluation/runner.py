@@ -106,9 +106,9 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
         return vals
 
     ratios = [
-        r.get("mean_compression_ratio")
-        if r.get("mean_compression_ratio") is not None
-        else r.get("orbit_metrics", {}).get("mean_compression_ratio")
+        (r.get("orbit_metrics", {}).get("mean_compression_ratio")
+         if r.get("orbit_metrics", {}).get("mean_compression_ratio") is not None
+         else r.get("orbit_metrics", {}).get("compression_ratio"))
         for r in all_results
     ]
     ratios = [v for v in ratios if v is not None]
@@ -116,9 +116,7 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     compression_ratio_std = float(np.std(ratios)) if ratios else None
 
     rewards = [
-        r.get("mean_reward")
-        if r.get("mean_reward") is not None
-        else r.get("orbit_metrics", {}).get("mean_reward")
+        r.get("orbit_metrics", {}).get("mean_reward")
         for r in all_results
     ]
     rewards = [v for v in rewards if v is not None]
@@ -129,11 +127,16 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
 
     # Compute mean/std for scalar metrics
     agg = {
+        "mean_compression_ratio": compression_ratio_mean,
+        "std_compression_ratio": compression_ratio_std,
+        "mean_reward": mean_reward_mean,
+        "std_reward": mean_reward_std,
         "compression_ratio_mean": compression_ratio_mean,
         "compression_ratio_std": compression_ratio_std,
         "mean_reward_mean": mean_reward_mean,
         "mean_reward_std": mean_reward_std,
         "n_runs": int(n_runs),
+        "dataset_path": str(input_path),
         "input_path": str(input_path),
         "block_size": int(config.block_size),
     }
@@ -391,6 +394,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         "total_compressed_bytes": orbit_metrics.get("total_compressed_bytes"),
         "codec_selection_counts": orbit_metrics.get("codec_selection_counts"),
         "regret_curve": regret_curve,
+        "block_results": block_results,
         "orbit_metrics": orbit_metrics,
         "baseline_metrics": baseline_metrics,
         "baselines_blockwise": baselines_blockwise,
@@ -406,6 +410,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         )
 
     ensure_output_dirs(output_dir)
+    safe_save_json(block_results, os.path.join(output_dir, "block_results.json"))
     policy_logger.dump_log(
         os.path.join(output_dir, "logs", "policy_log.jsonl")
     )
