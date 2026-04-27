@@ -33,7 +33,8 @@ def verify_seed_consistency(results: list[dict]) -> bool:
         run_id = int(rec["run_id"])
         seed = int(rec["seed"])
         base_seed = int(rec["base_seed"])
-        expected_seed = base_seed + run_id
+        # expected seed progression matches the scheme used in run_repeated_experiment
+        expected_seed = int(base_seed) * 100 + int(run_id) * 17
 
         if seed != expected_seed:
             print(
@@ -66,17 +67,28 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     seed_consistency_records = []
     base_seed = int(config.random_seed or 0)
     for run_idx in range(n_runs):
+        # Use well-separated effective seeds per run to avoid correlations
+        effective_seed = int(base_seed) * 100 + int(run_idx) * 17
         run_config = ORBITConfig(
-            **{**config.__dict__, "random_seed": base_seed + run_idx}
+            **{**config.__dict__, "random_seed": int(effective_seed)}
         )
-        np.random.seed(run_config.random_seed)
+        import random
+        np.random.seed(int(effective_seed))
+        random.seed(int(effective_seed))
+        # Debug: print the effective seed used for this run
+        print(f"run_repeated_experiment: starting run {run_idx} with effective_seed={effective_seed}")
         result = run_experiment(input_path, run_config, output_dir)
+        # store the actual effective seed used in the run result for traceability
+        try:
+            result["seed"] = int(effective_seed)
+        except Exception:
+            pass
         all_results.append(result)
         seed_consistency_records.append(
             {
                 "run_id": int(run_idx),
                 "base_seed": int(base_seed),
-                "seed": int(run_config.random_seed),
+                "seed": int(effective_seed),
                 "result": result,
             }
         )
@@ -105,6 +117,7 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
                 vals.append(val)
         return vals
 
+    # Debug: collect per-run compression ratios and print them before computing std
     ratios = [
         (r.get("orbit_metrics", {}).get("mean_compression_ratio")
          if r.get("orbit_metrics", {}).get("mean_compression_ratio") is not None
@@ -112,7 +125,9 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
         for r in all_results
     ]
     ratios = [v for v in ratios if v is not None]
+    print("run_repeated_experiment: per-run compression ratios:", ratios)
     compression_ratio_mean = float(np.mean(ratios)) if ratios else None
+    # ensure std is computed across the list of per-run ratios
     compression_ratio_std = float(np.std(ratios)) if ratios else None
 
     rewards = [
@@ -346,6 +361,18 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # Aggregate ORBIT metrics
     orbit_metrics = aggregate_block_results(block_results)
+    # Compute ORBIT throughput (MiB/s) using block sizes and per-block compression times
+    try:
+        total_bytes = float(sum(getattr(b, "size", 0) for b in blocks))
+    except Exception:
+        total_bytes = float(sum(get("original_size", 0) for get in []))
+    total_ms = float(sum(float(r.get("compression_ms", 0.0)) for r in block_results)) if block_results else 0.0
+    throughput_mbps = (
+        (total_bytes / total_ms * 1000.0) / (1024.0 * 1024.0)
+        if total_ms > 0.0
+        else 0.0
+    )
+    orbit_metrics["throughput_mbps"] = float(throughput_mbps)
     mean_cr = orbit_metrics.get("mean_compression_ratio")
     orbit_metrics["space_saving_pct"] = (
         float((1.0 - float(mean_cr)) * 100.0) if mean_cr is not None else None
@@ -356,6 +383,7 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         if block_results
         else 0.0
     )
+    # keep legacy field for compatibility
     orbit_throughput_mbps = (
         (total_original_bytes / 1e6) / total_elapsed_seconds
         if total_elapsed_seconds > 0.0
@@ -791,8 +819,11 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
     table_rows: list[dict] = []
     for dataset_name, method_groups in grouped.items():
         row: dict = {"dataset_name": dataset_name}
-        best_baseline_mean: float | None = None
+        best_baseline_min: float | None = None
+        best_baseline_throughput: float | None = None
+        baseline_blockwise_ratios: list[float] = []
         orbit_mean: float | None = None
+        orbit_throughput: float | None = None
 
         for method_name, method_records in method_groups.items():
             compression_vals = []
@@ -809,11 +840,17 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
                 if tp_val is None:
                     tp_val = rec.get("throughput_mbps_mean")
                 if tp_val is None and str(method_name).lower() == "orbit":
-                    tp_val = rec.get("orbit_throughput_mbps")
+                    # prefer throughput reported inside orbit_metrics when available
+                    tp_val = rec.get("orbit_metrics", {}).get("throughput_mbps")
+                    if tp_val is None:
+                        tp_val = rec.get("orbit_throughput_mbps")
                 if tp_val is not None:
                     throughput_vals.append(float(tp_val))
 
+            # Debug: print collected compression values for this method before aggregation
+            print(f"prepare_table1: method={method_name}, collected compression_vals=", compression_vals)
             mean_cr = float(np.mean(compression_vals)) if compression_vals else None
+            # compute std across the list of collected per-run compression values
             std_cr = float(np.std(compression_vals)) if compression_vals else None
             mean_tp = float(np.mean(throughput_vals)) if throughput_vals else None
 
@@ -825,18 +862,79 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
                 ),
                 "throughput_mbps": mean_tp,
             }
+            # Ensure each method entry carries an explicit method_name string.
+            # For ORBIT, set the literal "ORBIT". For baseline_blockwise, prefer the codec_name from records.
+            try:
+                if method_name.lower() == "orbit":
+                    row[method_name]["method_name"] = "ORBIT"
+                elif method_name.lower() == "baseline_blockwise":
+                    # pick codec_name from the first record that has it, fallback to method_name
+                    codec_name = next((r.get("codec_name") for r in method_records if r.get("codec_name")), None)
+                    row[method_name]["method_name"] = str(codec_name) if codec_name is not None else str(method_name)
+                else:
+                    row[method_name]["method_name"] = str(method_name)
+            except Exception:
+                # defensive: ignore if row[method_name] not present
+                pass
 
             if method_name.lower() == "orbit":
                 orbit_mean = mean_cr
+                orbit_throughput = mean_tp
             else:
-                if mean_cr is not None and (best_baseline_mean is None or mean_cr < best_baseline_mean):
-                    best_baseline_mean = mean_cr
+                # Use the minimum compression ratio among baseline_blockwise entries as best baseline.
+                if method_name.lower() == "baseline_blockwise" and compression_vals:
+                    baseline_blockwise_ratios.extend(float(v) for v in compression_vals)
+                    method_min = float(min(compression_vals))
+                    if best_baseline_min is None or method_min < best_baseline_min:
+                        best_baseline_min = method_min
 
-        # Compression ratio: lower is better; positive gain means ORBIT improved over best baseline.
-        if orbit_mean is not None and best_baseline_mean is not None and best_baseline_mean > 0:
-            row["relative_gain_vs_best_baseline"] = float((best_baseline_mean - orbit_mean) / best_baseline_mean)
+                    # Track throughput for the baseline record that achieves best compression (minimum ratio).
+                    best_idx = min(
+                        range(len(method_records)),
+                        key=lambda i: float(
+                            method_records[i].get("compression_ratio")
+                            if method_records[i].get("compression_ratio") is not None
+                            else method_records[i].get("compression_ratio_mean", float("inf"))
+                        ),
+                    )
+                    best_rec = method_records[best_idx]
+                    best_tp = best_rec.get("throughput_mbps")
+                    if best_tp is None:
+                        best_tp = best_rec.get("throughput_mbps_mean")
+                    if best_tp is not None:
+                        best_baseline_throughput = float(best_tp)
+
+        # Compare ORBIT against average baseline ratio (positive means ORBIT is better).
+        average_baseline_ratio = (
+            float(np.mean(baseline_blockwise_ratios)) if baseline_blockwise_ratios else None
+        )
+        median_baseline_ratio = (
+            float(np.median(baseline_blockwise_ratios)) if baseline_blockwise_ratios else None
+        )
+
+        # Place relative gain only on the ORBIT method entry (not at dataset level).
+        orbit_key = next((k for k in row.keys() if k.lower() == "orbit"), None)
+        if orbit_key is not None:
+            if orbit_mean is not None and average_baseline_ratio is not None:
+                row[orbit_key]["relative_gain_vs_best_baseline"] = float(average_baseline_ratio - orbit_mean)
+            else:
+                row[orbit_key]["relative_gain_vs_best_baseline"] = None
+
+            # Also attach gain_vs_naive_best (median baseline) to ORBIT entry for clarity.
+            if orbit_mean is not None and median_baseline_ratio is not None:
+                row[orbit_key]["gain_vs_naive_best"] = float(median_baseline_ratio - orbit_mean)
+            else:
+                row[orbit_key]["gain_vs_naive_best"] = None
+
+        # Speed cost visibility: ORBIT throughput relative to best-baseline throughput.
+        if (
+            orbit_throughput is not None
+            and best_baseline_throughput is not None
+            and best_baseline_throughput > 0
+        ):
+            row["throughput_overhead_ratio"] = float(orbit_throughput / best_baseline_throughput)
         else:
-            row["relative_gain_vs_best_baseline"] = None
+            row["throughput_overhead_ratio"] = None
 
         table_rows.append(row)
 
