@@ -48,7 +48,7 @@ def validate_comparison_record(record: dict) -> list[str]:
 
 
 def compression_ratio(original: int, compressed: int) -> float:
-    if compressed == 0:
+    if original == 0:
         return 0.0
     return compressed / original
 
@@ -76,6 +76,7 @@ def aggregate_block_results(results: list[dict]) -> dict:
         return {
             "mean_compression_ratio": 0.0,
             "compression_ratio": 0.0,
+            "space_saving_pct": 100.0,
             "codec_selection_counts": {},
             "mean_reward": 0.0,
             "total_original_bytes": 0,
@@ -92,6 +93,7 @@ def aggregate_block_results(results: list[dict]) -> dict:
         return {
             "mean_compression_ratio": None,
             "compression_ratio": None,
+            "space_saving_pct": None,
             "codec_selection_counts": None,
             "mean_reward": None,
             "total_original_bytes": None,
@@ -101,7 +103,7 @@ def aggregate_block_results(results: list[dict]) -> dict:
     total_original = sum(r["original_size"] for r in results)
     total_compressed = sum(r["compressed_size"] for r in results)
     mean_compression_ratio = (
-        sum(r["original_size"] / r["compressed_size"] for r in results if r["compressed_size"] > 0) / len(results)
+        sum(r["compressed_size"] / r["original_size"] for r in results if r["original_size"] > 0) / len(results)
     )
     codec_selection_counts = {}
     for r in results:
@@ -111,6 +113,7 @@ def aggregate_block_results(results: list[dict]) -> dict:
     return {
         "mean_compression_ratio": mean_compression_ratio,
         "compression_ratio": mean_compression_ratio,
+        "space_saving_pct": float((1.0 - mean_compression_ratio) * 100.0),
         "codec_selection_counts": codec_selection_counts,
         "mean_reward": mean_reward,
         "total_original_bytes": total_original,
