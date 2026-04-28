@@ -799,13 +799,8 @@ def run_block_size_sweep(
 
 def prepare_table1(core_comparison_path: str, output_path: str) -> None:
     """
-    New implementation:
-    - Load core_comparison.json and validate it's a list of dicts
-    - Group by dataset_name
-    - For each dataset produce a row dict containing dataset_name and a key per method_name
-      where each method value contains aggregated compression and throughput stats
-    - For ORBIT method, compute relative_gain_vs_best_baseline = orbit_ratio - min(baseline_ratios)
-    - Save list of row dicts to output_path
+    Load core_comparison.json, flatten by dataset_name/method_name, and emit one
+    row per dataset/method pair with the requested fields only.
     """
     with open(core_comparison_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -813,92 +808,83 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
     if not isinstance(data, list):
         raise ValueError("core_comparison.json must contain a list of records")
 
-    # Normalize: parse any stringified items
-    normalized = [json.loads(r) if isinstance(r, str) else r for r in data]
-
-    # Validate items are dicts
-    for idx, item in enumerate(normalized):
+    rows: list[dict] = []
+    for idx, item in enumerate(data):
+        if isinstance(item, str):
+            item = json.loads(item)
         if not isinstance(item, dict):
-            raise ValueError(f"core_comparison entry at index {idx} is not an object/dict")
+            raise ValueError(f"core_comparison entry at index {idx} is not a dict")
+        rows.append(item)
 
-    # Group by dataset_name
-    groups: dict[str, list[dict]] = {}
-    for rec in normalized:
-        ds = rec.get("dataset_name")
-        m = rec.get("method_name")
-        if ds is None or m is None:
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for rec in rows:
+        dataset_name = rec.get("dataset_name")
+        method_name = rec.get("method_name")
+        if dataset_name is None or method_name is None:
             continue
-        groups.setdefault(str(ds), []).append(rec)
+        grouped.setdefault(str(dataset_name), {}).setdefault(str(method_name), []).append(rec)
 
-    table_rows: list[dict] = []
-    for ds, recs in groups.items():
-        row: dict = {"dataset_name": ds}
-
-        # Aggregate per method_name within this dataset
-        methods: dict[str, list[dict]] = {}
-        for rec in recs:
-            key = str(rec.get("method_name"))
-            methods.setdefault(key, []).append(rec)
-
-        # Compute stats per method
+    output_rows: list[dict] = []
+    for dataset_name, method_groups in grouped.items():
+        dataset_rows: list[dict] = []
         baseline_ratios: list[float] = []
-        orbit_ratio: float | None = None
 
-        for method_key, records in methods.items():
-            cr_vals: list[float] = []
-            tp_vals: list[float] = []
-            for r in records:
-                cr = r.get("compression_ratio")
-                if cr is None:
-                    cr = r.get("compression_ratio_mean")
-                try:
-                    if cr is not None:
-                        cr_vals.append(float(cr))
-                except Exception:
-                    pass
+        for method_key, method_records in method_groups.items():
+            compression_values: list[float] = []
+            throughput_values: list[float] = []
 
-                tp = r.get("throughput_mbps")
-                if tp is None:
-                    tp = r.get("throughput_mbps_mean")
-                # prefer orbit_metrics throughput when method is orbit and tp missing
-                if tp is None and method_key.lower() == "orbit":
-                    tp = r.get("orbit_metrics", {}).get("throughput_mbps") or r.get("orbit_throughput_mbps")
-                try:
-                    if tp is not None:
-                        tp_vals.append(float(tp))
-                except Exception:
-                    pass
+            for rec in method_records:
+                compression_value = rec.get("compression_ratio")
+                if compression_value is None:
+                    compression_value = rec.get("compression_ratio_mean")
+                if compression_value is not None:
+                    compression_values.append(float(compression_value))
 
-            mean_cr = float(np.mean(cr_vals)) if cr_vals else None
-            std_cr = float(np.std(cr_vals)) if cr_vals and len(cr_vals) > 1 else (0.0 if cr_vals else None)
-            mean_tp = float(np.mean(tp_vals)) if tp_vals else None
+                throughput_value = rec.get("throughput_mbps")
+                if throughput_value is None:
+                    throughput_value = rec.get("throughput_mbps_mean")
+                if throughput_value is None and method_key.lower() == "orbit":
+                    throughput_value = rec.get("orbit_metrics", {}).get("throughput_mbps")
+                    if throughput_value is None:
+                        throughput_value = rec.get("orbit_throughput_mbps")
+                if throughput_value is not None:
+                    throughput_values.append(float(throughput_value))
 
-            row[method_key] = {
-                "compression_ratio": mean_cr,
-                "std_compression_ratio": std_cr,
-                "throughput_mbps": mean_tp,
+            mean_compression_ratio = float(np.mean(compression_values)) if compression_values else None
+            std_compression_ratio = float(np.std(compression_values)) if len(compression_values) > 1 else 0.0 if compression_values else None
+            mean_throughput_mbps = float(np.mean(throughput_values)) if throughput_values else None
+
+            display_method_name = "ORBIT" if method_key.lower() == "orbit" else str(
+                next((r.get("codec_name") for r in method_records if r.get("codec_name")), method_key)
+            )
+
+            row = {
+                "dataset_name": str(dataset_name),
+                "method_name": display_method_name,
+                "compression_ratio": mean_compression_ratio,
+                "std_compression_ratio": std_compression_ratio,
+                "throughput_mbps": mean_throughput_mbps,
+                "is_orbit": method_key.lower() == "orbit",
+                "relative_gain_vs_best_baseline": 0.0,
             }
 
-            if method_key.lower() != "orbit":
-                # collect baseline ratios for comparison
-                if mean_cr is not None:
-                    baseline_ratios.append(mean_cr)
-            else:
-                orbit_ratio = mean_cr
+            if method_key.lower() != "orbit" and mean_compression_ratio is not None:
+                baseline_ratios.append(mean_compression_ratio)
 
-        # Compute ORBIT relative gain vs best baseline (min baseline ratio)
-        orbit_key = next((k for k in row.keys() if k.lower() == "orbit"), None)
-        if orbit_key is not None:
-            if orbit_ratio is not None and baseline_ratios:
-                best_baseline_min = float(min(baseline_ratios))
-                row[orbit_key]["relative_gain_vs_best_baseline"] = float(orbit_ratio - best_baseline_min)
-            else:
-                row[orbit_key]["relative_gain_vs_best_baseline"] = None
+            dataset_rows.append(row)
 
-        table_rows.append(row)
+        best_baseline_ratio = min(baseline_ratios) if baseline_ratios else None
+        for row in dataset_rows:
+            if row["is_orbit"]:
+                if best_baseline_ratio is not None and row["compression_ratio"] is not None:
+                    row["relative_gain_vs_best_baseline"] = float(best_baseline_ratio - row["compression_ratio"])
+                else:
+                    row["relative_gain_vs_best_baseline"] = 0.0
+
+        output_rows.extend(dataset_rows)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    safe_save_json(table_rows, output_path)
+    safe_save_json(output_rows, output_path)
 
 
 def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> None:
@@ -948,89 +934,54 @@ def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> N
 
 def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     """
-    Prepare ranked ablation table from ablation_results.json.
-    Adds rank, delta_vs_full_features, and is_best fields.
+    Prepare ablation table from ablation_results.json.
+    Normalizes either a flat list or a dict-of-lists, then ranks only mixed_corpus rows.
     """
     with open(ablation_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    # If a dict was saved at top-level, extract the first list value.
     if isinstance(data, dict):
-        # pick first value that is a list
-        first_val = None
-        for v in data.values():
-            if isinstance(v, list):
-                first_val = v
-                break
-        if first_val is None:
-            raise ValueError("ablation_results.json dict does not contain a list value")
-        rows = first_val
-    elif isinstance(data, list):
-        rows = data
+        rows = [r for v in data.values() for r in v]
     else:
-        raise ValueError("ablation_results.json must contain a list or a dict with a list value")
+        rows = data
 
-    # Parse any entries that were double-serialized as JSON strings.
-    parsed: list[dict] = []
+    if not isinstance(rows, list):
+        raise ValueError("ablation_results.json must contain a list or dict of lists")
+
+    normalized_rows: list[dict] = []
     for idx, item in enumerate(rows):
         if isinstance(item, str):
-            try:
-                obj = json.loads(item)
-            except Exception as exc:
-                raise ValueError(f"Failed to parse string entry at index {idx}: {exc}")
-            parsed.append(obj)
-        else:
-            parsed.append(item)
-
-    # Ensure every item is a dict
-    for idx, item in enumerate(parsed):
+            item = json.loads(item)
         if not isinstance(item, dict):
-            raise ValueError(f"ablation_results entry at index {idx} is not an object/dict")
+            raise ValueError(f"ablation_results entry at index {idx} is not a dict")
+        normalized_rows.append(item)
 
-    rows = parsed
+    mixed_rows = [row for row in normalized_rows if str(row.get("dataset_name")) == "mixed_corpus"]
 
     def _compression_ratio(rec: dict) -> float:
-        val = rec.get("compression_ratio")
-        if val is None:
-            val = rec.get("mean_compression_ratio")
-        try:
-            return float(val) if val is not None else float("-inf")
-        except Exception:
-            return float("-inf")
+        value = rec.get("compression_ratio")
+        if value is None:
+            value = rec.get("mean_compression_ratio")
+        return float(value)
 
     full_label = "entropy+repetition+rle_ratio"
-    full_row = next((r for r in rows if str(r.get("feature_set_label", "")) == full_label), None)
-    full_cr = None
-    if full_row is not None:
-        full_cr = _compression_ratio(full_row)
+    full_row = next((row for row in mixed_rows if str(row.get("feature_set_label")) == full_label), None)
+    full_ratio = _compression_ratio(full_row) if full_row is not None else None
 
-    # Compute delta_vs_full_features for each row
-    for rec in rows:
-        cr_val = rec.get("compression_ratio")
-        if cr_val is None:
-            cr_val = rec.get("mean_compression_ratio")
-        try:
-            crf = float(cr_val) if cr_val is not None else None
-        except Exception:
-            crf = None
+    for row in mixed_rows:
+        ratio = _compression_ratio(row)
+        row["delta_vs_full_features"] = (
+            float(ratio - full_ratio) if full_ratio is not None else None
+        )
 
-        if crf is None or full_cr is None or full_cr == float("-inf"):
-            rec["delta_vs_full_features"] = None
-        else:
-            rec["delta_vs_full_features"] = float(crf - full_cr)
+    sorted_rows = sorted(mixed_rows, key=_compression_ratio)
+    for idx, row in enumerate(sorted_rows, start=1):
+        row["rank"] = idx
+        row["is_best"] = idx == 1
 
-    # Sort rows by compression_ratio descending
-    sorted_rows = sorted(rows, key=lambda r: _compression_ratio(r), reverse=True)
-
-    # Assign rank and is_best
-    for i, rec in enumerate(sorted_rows, start=1):
-        rec["rank"] = i
-        rec["is_best"] = i == 1
-
-    # Save final list of dicts as JSON (indent=2). Ensure directory exists.
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as out_f:
-        out_f.write(json.dumps(sorted_rows, indent=2, default=str))
+        out_f.write(json.dumps(sorted_rows, indent=2))
 
 
 def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
