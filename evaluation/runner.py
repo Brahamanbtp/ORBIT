@@ -250,14 +250,18 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
 
     # --- Write reproducibility_manifest.json before pipeline runs ---
     # ORBIT version from pyproject.toml
-    orbit_version = None
+    orbit_version = "0.1.0"
     try:
-        import toml
-        with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "r", encoding="utf-8") as f:
-            pyproject = toml.load(f)
-            orbit_version = pyproject.get("project", {}).get("version", None)
+        try:
+            import tomllib
+        except ImportError:
+            import tomli as tomllib
+
+        with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "rb") as f:
+            data = tomllib.load(f)
+        orbit_version = data.get("project", {}).get("version", "0.1.0")
     except Exception:
-        orbit_version = None
+        orbit_version = "0.1.0"
 
     # Codec library versions
     def get_version_safe(pkg):
@@ -562,9 +566,12 @@ def run_ablation_study(input_path_or_entries: str | list, output_dir: str, featu
                 codec_selection_entropy = 0.0
 
             metrics["codec_selection_entropy"] = codec_selection_entropy
-            metrics["feature_set"] = list(feature_set)
+            metrics["feature_set"] = str(label)
             metrics["feature_set_label"] = label
             metrics["dataset_name"] = entry.name
+            metrics["rank"] = 0
+            metrics["delta_vs_full_features"] = 0.0
+            metrics["is_best"] = False
             results.append(metrics)
     safe_save_json(results, os.path.join(output_dir, "ablation_results.json"))
     return results
@@ -780,20 +787,31 @@ def run_block_size_sweep(
         elapsed_ms = (time.time() - start) * 1000.0
 
         result = repeated
-        ratio = result.get("compression_ratio_mean") or result.get("compression_ratio", 0.0)
-        if (ratio is None or ratio == 0.0) and result.get("compression_ratio_mean") is not None:
-            ratio = result.get("compression_ratio_mean")
+        ratio = result.get("mean_compression_ratio")
+        if ratio is None:
+            ratio = result.get("compression_ratio")
 
-        regret_curve = repeated.get("regret_curve_mean", []) or []
+        aggregated_regret_path = os.path.join(block_output_dir, "regret_curve_aggregated.json")
+        regret_curve = []
+        if os.path.exists(aggregated_regret_path):
+            try:
+                with open(aggregated_regret_path, "r", encoding="utf-8") as f:
+                    aggregated_regret = json.load(f)
+                if isinstance(aggregated_regret, list):
+                    regret_curve = [float(entry.get("mean_normalized_regret", 0.0)) for entry in aggregated_regret if isinstance(entry, dict)]
+            except Exception:
+                regret_curve = []
+
         convergence_idx = estimate_convergence_block(
             regret_curve,
             window=100,
             threshold=0.0001,
         )
-        regret_convergence_block = convergence_idx if convergence_idx >= 0 else None
+        regret_convergence_block = int(convergence_idx) if convergence_idx >= 0 else -1
 
         row = {
             "block_size": int(block_size),
+            "compression_ratio": float(ratio) if ratio is not None else 0.0,
             "mean_compression_ratio": float(ratio) if ratio is not None else 0.0,
             "throughput_mbps": float(throughput_mbps(input_bytes * 3, elapsed_ms)),
             "regret_convergence_block": regret_convergence_block,
@@ -960,7 +978,9 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     normalized_rows: list[dict] = []
     for idx, item in enumerate(rows):
         if isinstance(item, str):
-            item = json.loads(item)
+            raise ValueError(
+                f"ablation_results entry at index {idx} is a string; ablation_results.json was written incorrectly"
+            )
         if not isinstance(item, dict):
             raise ValueError(f"ablation_results entry at index {idx} is not a dict")
         normalized_rows.append(item)
