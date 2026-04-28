@@ -799,142 +799,101 @@ def run_block_size_sweep(
 
 def prepare_table1(core_comparison_path: str, output_path: str) -> None:
     """
-    Prepare a pivoted summary table from core_comparison.json.
-    Output rows are keyed by dataset_name with one column per method_name.
+    New implementation:
+    - Load core_comparison.json and validate it's a list of dicts
+    - Group by dataset_name
+    - For each dataset produce a row dict containing dataset_name and a key per method_name
+      where each method value contains aggregated compression and throughput stats
+    - For ORBIT method, compute relative_gain_vs_best_baseline = orbit_ratio - min(baseline_ratios)
+    - Save list of row dicts to output_path
     """
     with open(core_comparison_path, "r", encoding="utf-8") as f:
-        records = json.load(f)
+        data = json.load(f)
 
-    if not isinstance(records, list):
+    if not isinstance(data, list):
         raise ValueError("core_comparison.json must contain a list of records")
 
-    grouped: dict[str, dict[str, list[dict]]] = {}
-    for rec in records:
-        dataset_name = rec.get("dataset_name")
-        method_name = rec.get("method_name")
-        if dataset_name is None or method_name is None:
+    # Normalize: parse any stringified items
+    normalized = [json.loads(r) if isinstance(r, str) else r for r in data]
+
+    # Validate items are dicts
+    for idx, item in enumerate(normalized):
+        if not isinstance(item, dict):
+            raise ValueError(f"core_comparison entry at index {idx} is not an object/dict")
+
+    # Group by dataset_name
+    groups: dict[str, list[dict]] = {}
+    for rec in normalized:
+        ds = rec.get("dataset_name")
+        m = rec.get("method_name")
+        if ds is None or m is None:
             continue
-        grouped.setdefault(str(dataset_name), {}).setdefault(str(method_name), []).append(rec)
+        groups.setdefault(str(ds), []).append(rec)
 
     table_rows: list[dict] = []
-    for dataset_name, method_groups in grouped.items():
-        row: dict = {"dataset_name": dataset_name}
-        best_baseline_min: float | None = None
-        best_baseline_throughput: float | None = None
-        baseline_blockwise_ratios: list[float] = []
-        orbit_mean: float | None = None
-        orbit_throughput: float | None = None
+    for ds, recs in groups.items():
+        row: dict = {"dataset_name": ds}
 
-        for method_name, method_records in method_groups.items():
-            compression_vals = []
-            throughput_vals = []
+        # Aggregate per method_name within this dataset
+        methods: dict[str, list[dict]] = {}
+        for rec in recs:
+            key = str(rec.get("method_name"))
+            methods.setdefault(key, []).append(rec)
 
-            for rec in method_records:
-                cr_val = rec.get("compression_ratio")
-                if cr_val is None:
-                    cr_val = rec.get("compression_ratio_mean")
-                if cr_val is not None:
-                    compression_vals.append(float(cr_val))
+        # Compute stats per method
+        baseline_ratios: list[float] = []
+        orbit_ratio: float | None = None
 
-                tp_val = rec.get("throughput_mbps")
-                if tp_val is None:
-                    tp_val = rec.get("throughput_mbps_mean")
-                if tp_val is None and str(method_name).lower() == "orbit":
-                    # prefer throughput reported inside orbit_metrics when available
-                    tp_val = rec.get("orbit_metrics", {}).get("throughput_mbps")
-                    if tp_val is None:
-                        tp_val = rec.get("orbit_throughput_mbps")
-                if tp_val is not None:
-                    throughput_vals.append(float(tp_val))
+        for method_key, records in methods.items():
+            cr_vals: list[float] = []
+            tp_vals: list[float] = []
+            for r in records:
+                cr = r.get("compression_ratio")
+                if cr is None:
+                    cr = r.get("compression_ratio_mean")
+                try:
+                    if cr is not None:
+                        cr_vals.append(float(cr))
+                except Exception:
+                    pass
 
-            # Debug: print collected compression values for this method before aggregation
-            print(f"prepare_table1: method={method_name}, collected compression_vals=", compression_vals)
-            mean_cr = float(np.mean(compression_vals)) if compression_vals else None
-            # compute std across the list of collected per-run compression values
-            std_cr = float(np.std(compression_vals)) if compression_vals else None
-            mean_tp = float(np.mean(throughput_vals)) if throughput_vals else None
+                tp = r.get("throughput_mbps")
+                if tp is None:
+                    tp = r.get("throughput_mbps_mean")
+                # prefer orbit_metrics throughput when method is orbit and tp missing
+                if tp is None and method_key.lower() == "orbit":
+                    tp = r.get("orbit_metrics", {}).get("throughput_mbps") or r.get("orbit_throughput_mbps")
+                try:
+                    if tp is not None:
+                        tp_vals.append(float(tp))
+                except Exception:
+                    pass
 
-            row[method_name] = {
-                "mean_compression_ratio": mean_cr,
+            mean_cr = float(np.mean(cr_vals)) if cr_vals else None
+            std_cr = float(np.std(cr_vals)) if cr_vals and len(cr_vals) > 1 else (0.0 if cr_vals else None)
+            mean_tp = float(np.mean(tp_vals)) if tp_vals else None
+
+            row[method_key] = {
+                "compression_ratio": mean_cr,
                 "std_compression_ratio": std_cr,
-                "mean_compression_ratio_pm_std": (
-                    f"{mean_cr:.6f} ± {std_cr:.6f}" if mean_cr is not None and std_cr is not None else None
-                ),
                 "throughput_mbps": mean_tp,
             }
-            # Ensure each method entry carries an explicit method_name string.
-            # For ORBIT, set the literal "ORBIT". For baseline_blockwise, prefer the codec_name from records.
-            try:
-                if method_name.lower() == "orbit":
-                    row[method_name]["method_name"] = "ORBIT"
-                elif method_name.lower() == "baseline_blockwise":
-                    # pick codec_name from the first record that has it, fallback to method_name
-                    codec_name = next((r.get("codec_name") for r in method_records if r.get("codec_name")), None)
-                    row[method_name]["method_name"] = str(codec_name) if codec_name is not None else str(method_name)
-                else:
-                    row[method_name]["method_name"] = str(method_name)
-            except Exception:
-                # defensive: ignore if row[method_name] not present
-                pass
 
-            if method_name.lower() == "orbit":
-                orbit_mean = mean_cr
-                orbit_throughput = mean_tp
+            if method_key.lower() != "orbit":
+                # collect baseline ratios for comparison
+                if mean_cr is not None:
+                    baseline_ratios.append(mean_cr)
             else:
-                # Use the minimum compression ratio among baseline_blockwise entries as best baseline.
-                if method_name.lower() == "baseline_blockwise" and compression_vals:
-                    baseline_blockwise_ratios.extend(float(v) for v in compression_vals)
-                    method_min = float(min(compression_vals))
-                    if best_baseline_min is None or method_min < best_baseline_min:
-                        best_baseline_min = method_min
+                orbit_ratio = mean_cr
 
-                    # Track throughput for the baseline record that achieves best compression (minimum ratio).
-                    best_idx = min(
-                        range(len(method_records)),
-                        key=lambda i: float(
-                            method_records[i].get("compression_ratio")
-                            if method_records[i].get("compression_ratio") is not None
-                            else method_records[i].get("compression_ratio_mean", float("inf"))
-                        ),
-                    )
-                    best_rec = method_records[best_idx]
-                    best_tp = best_rec.get("throughput_mbps")
-                    if best_tp is None:
-                        best_tp = best_rec.get("throughput_mbps_mean")
-                    if best_tp is not None:
-                        best_baseline_throughput = float(best_tp)
-
-        # Compare ORBIT against average baseline ratio (positive means ORBIT is better).
-        average_baseline_ratio = (
-            float(np.mean(baseline_blockwise_ratios)) if baseline_blockwise_ratios else None
-        )
-        median_baseline_ratio = (
-            float(np.median(baseline_blockwise_ratios)) if baseline_blockwise_ratios else None
-        )
-
-        # Place relative gain only on the ORBIT method entry (not at dataset level).
+        # Compute ORBIT relative gain vs best baseline (min baseline ratio)
         orbit_key = next((k for k in row.keys() if k.lower() == "orbit"), None)
         if orbit_key is not None:
-            if orbit_mean is not None and average_baseline_ratio is not None:
-                row[orbit_key]["relative_gain_vs_best_baseline"] = float(average_baseline_ratio - orbit_mean)
+            if orbit_ratio is not None and baseline_ratios:
+                best_baseline_min = float(min(baseline_ratios))
+                row[orbit_key]["relative_gain_vs_best_baseline"] = float(orbit_ratio - best_baseline_min)
             else:
                 row[orbit_key]["relative_gain_vs_best_baseline"] = None
-
-            # Also attach gain_vs_naive_best (median baseline) to ORBIT entry for clarity.
-            if orbit_mean is not None and median_baseline_ratio is not None:
-                row[orbit_key]["gain_vs_naive_best"] = float(median_baseline_ratio - orbit_mean)
-            else:
-                row[orbit_key]["gain_vs_naive_best"] = None
-
-        # Speed cost visibility: ORBIT throughput relative to best-baseline throughput.
-        if (
-            orbit_throughput is not None
-            and best_baseline_throughput is not None
-            and best_baseline_throughput > 0
-        ):
-            row["throughput_overhead_ratio"] = float(orbit_throughput / best_baseline_throughput)
-        else:
-            row["throughput_overhead_ratio"] = None
 
         table_rows.append(row)
 
@@ -993,56 +952,85 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     Adds rank, delta_vs_full_features, and is_best fields.
     """
     with open(ablation_path, "r", encoding="utf-8") as f:
-        records = json.load(f)
+        data = json.load(f)
 
-    if not isinstance(records, list):
-        raise ValueError("ablation_results.json must contain a list of records")
+    # If a dict was saved at top-level, extract the first list value.
+    if isinstance(data, dict):
+        # pick first value that is a list
+        first_val = None
+        for v in data.values():
+            if isinstance(v, list):
+                first_val = v
+                break
+        if first_val is None:
+            raise ValueError("ablation_results.json dict does not contain a list value")
+        rows = first_val
+    elif isinstance(data, list):
+        rows = data
+    else:
+        raise ValueError("ablation_results.json must contain a list or a dict with a list value")
 
-    rows = [rec for rec in records if isinstance(rec, dict)]
+    # Parse any entries that were double-serialized as JSON strings.
+    parsed: list[dict] = []
+    for idx, item in enumerate(rows):
+        if isinstance(item, str):
+            try:
+                obj = json.loads(item)
+            except Exception as exc:
+                raise ValueError(f"Failed to parse string entry at index {idx}: {exc}")
+            parsed.append(obj)
+        else:
+            parsed.append(item)
+
+    # Ensure every item is a dict
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            raise ValueError(f"ablation_results entry at index {idx} is not an object/dict")
+
+    rows = parsed
 
     def _compression_ratio(rec: dict) -> float:
-        ratio = rec.get("compression_ratio") or rec.get("mean_compression_ratio", 0.0)
-        return float(ratio)
+        val = rec.get("compression_ratio")
+        if val is None:
+            val = rec.get("mean_compression_ratio")
+        try:
+            return float(val) if val is not None else float("-inf")
+        except Exception:
+            return float("-inf")
 
-    grouped_rows: dict[str, list[dict]] = {}
+    full_label = "entropy+repetition+rle_ratio"
+    full_row = next((r for r in rows if str(r.get("feature_set_label", "")) == full_label), None)
+    full_cr = None
+    if full_row is not None:
+        full_cr = _compression_ratio(full_row)
+
+    # Compute delta_vs_full_features for each row
     for rec in rows:
-        dataset_name = str(rec.get("dataset_name", "unknown"))
-        grouped_rows.setdefault(dataset_name, []).append(rec)
+        cr_val = rec.get("compression_ratio")
+        if cr_val is None:
+            cr_val = rec.get("mean_compression_ratio")
+        try:
+            crf = float(cr_val) if cr_val is not None else None
+        except Exception:
+            crf = None
 
-    table_rows: dict[str, list[dict]] = {}
-    full_set = {"entropy", "rle_ratio", "repetition"}
-    full_set_label = "entropy+repetition+rle_ratio"
+        if crf is None or full_cr is None or full_cr == float("-inf"):
+            rec["delta_vs_full_features"] = None
+        else:
+            rec["delta_vs_full_features"] = float(crf - full_cr)
 
-    for dataset_name, dataset_rows in grouped_rows.items():
-        full_features_ratio = None
-        for rec in dataset_rows:
-            feature_set = rec.get("feature_set", [])
-            feature_set_label = rec.get("feature_set_label")
-            is_full_by_list = isinstance(feature_set, list) and set(feature_set) == full_set
-            is_full_by_label = str(feature_set_label) == full_set_label
-            if is_full_by_list or is_full_by_label:
-                full_features_ratio = _compression_ratio(rec)
-                break
+    # Sort rows by compression_ratio descending
+    sorted_rows = sorted(rows, key=lambda r: _compression_ratio(r), reverse=True)
 
-        sorted_rows = sorted(dataset_rows, key=_compression_ratio)
-        ranked_rows: list[dict] = []
-        for idx, rec in enumerate(sorted_rows, start=1):
-            row = dict(rec)
-            ratio_val = _compression_ratio(row)
+    # Assign rank and is_best
+    for i, rec in enumerate(sorted_rows, start=1):
+        rec["rank"] = i
+        rec["is_best"] = i == 1
 
-            row["rank"] = idx
-            row["delta_vs_full_features"] = (
-                float(ratio_val - full_features_ratio)
-                if full_features_ratio is not None
-                else None
-            )
-            row["is_best"] = idx == 1
-            ranked_rows.append(row)
-
-        table_rows[dataset_name] = ranked_rows
-
+    # Save final list of dicts as JSON (indent=2). Ensure directory exists.
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    safe_save_json(table_rows, output_path)
+    with open(output_path, "w", encoding="utf-8") as out_f:
+        out_f.write(json.dumps(sorted_rows, indent=2, default=str))
 
 
 def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
@@ -1052,6 +1040,9 @@ def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
     """
     with open(sweep_path, "r", encoding="utf-8") as f:
         rows = json.load(f)
+
+    # Defensive parse: convert any double-serialized JSON strings into objects.
+    rows = [json.loads(r) if isinstance(r, str) else r for r in rows]
 
     if not isinstance(rows, list):
         raise ValueError("block_size_sweep.json must contain a list of records")
