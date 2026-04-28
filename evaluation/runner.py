@@ -726,6 +726,12 @@ def run_core_comparison(
                 }
             )
 
+        dataset_records = [r for r in rows if str(r.get("dataset_name")) == str(dataset.name)]
+        dataset_method_names = sorted({str(r.get("method_name")) for r in dataset_records})
+        print(
+            f"run_core_comparison: dataset={dataset.name}, methods={dataset_method_names}, count={len(dataset_records)}"
+        )
+
     for record in rows:
         missing_keys = validate_comparison_record(record)
         if missing_keys:
@@ -814,6 +820,9 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
             item = json.loads(item)
         if not isinstance(item, dict):
             raise ValueError(f"core_comparison entry at index {idx} is not a dict")
+        if str(item.get("method_name")) == "baseline_blockwise" and item.get("codec_name") is not None:
+            item = dict(item)
+            item["method_name"] = str(item["codec_name"])
         rows.append(item)
 
     grouped: dict[str, dict[str, list[dict]]] = {}
@@ -877,7 +886,7 @@ def prepare_table1(core_comparison_path: str, output_path: str) -> None:
         for row in dataset_rows:
             if row["is_orbit"]:
                 if best_baseline_ratio is not None and row["compression_ratio"] is not None:
-                    row["relative_gain_vs_best_baseline"] = float(best_baseline_ratio - row["compression_ratio"])
+                    row["relative_gain_vs_best_baseline"] = float(row["compression_ratio"] / best_baseline_ratio)
                 else:
                     row["relative_gain_vs_best_baseline"] = 0.0
 
@@ -935,7 +944,7 @@ def prepare_regret_plot_data(aggregated_regret_path: str, output_path: str) -> N
 def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     """
     Prepare ablation table from ablation_results.json.
-    Normalizes either a flat list or a dict-of-lists, then ranks only mixed_corpus rows.
+    Normalizes either a flat list or a dict-of-lists, then ranks rows per dataset_name.
     """
     with open(ablation_path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -956,32 +965,75 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
             raise ValueError(f"ablation_results entry at index {idx} is not a dict")
         normalized_rows.append(item)
 
-    mixed_rows = [row for row in normalized_rows if str(row.get("dataset_name")) == "mixed_corpus"]
-
     def _compression_ratio(rec: dict) -> float:
         value = rec.get("compression_ratio")
         if value is None:
             value = rec.get("mean_compression_ratio")
         return float(value)
 
-    full_label = "entropy+repetition+rle_ratio"
-    full_row = next((row for row in mixed_rows if str(row.get("feature_set_label")) == full_label), None)
-    full_ratio = _compression_ratio(full_row) if full_row is not None else None
+    def _throughput_mbps(rec: dict) -> float | None:
+        value = rec.get("throughput_mbps")
+        if value is None:
+            value = rec.get("throughput_mbps_mean")
+        return float(value) if value is not None else None
 
-    for row in mixed_rows:
-        ratio = _compression_ratio(row)
-        row["delta_vs_full_features"] = (
-            float(ratio - full_ratio) if full_ratio is not None else None
-        )
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for row in normalized_rows:
+        dataset_name = str(row.get("dataset_name") or "unknown")
+        feature_set_label = str(row.get("feature_set_label"))
+        grouped.setdefault(dataset_name, {}).setdefault(feature_set_label, []).append(row)
 
-    sorted_rows = sorted(mixed_rows, key=_compression_ratio)
-    for idx, row in enumerate(sorted_rows, start=1):
-        row["rank"] = idx
-        row["is_best"] = idx == 1
+    output_rows: dict[str, list[dict]] = {}
+    for dataset_name in sorted(grouped.keys()):
+        feature_groups = grouped[dataset_name]
+        dataset_rows: list[dict] = []
+
+        for feature_set_label, group_rows in feature_groups.items():
+            compression_values = [
+                _compression_ratio(r)
+                for r in group_rows
+                if r.get("compression_ratio") is not None or r.get("mean_compression_ratio") is not None
+            ]
+            throughput_values = [
+                _throughput_mbps(r)
+                for r in group_rows
+                if _throughput_mbps(r) is not None
+            ]
+            std_values = [
+                float(r.get("std_compression_ratio"))
+                for r in group_rows
+                if r.get("std_compression_ratio") is not None
+            ]
+
+            representative = dict(group_rows[0])
+            representative["dataset_name"] = dataset_name
+            representative["feature_set_label"] = feature_set_label
+            representative["compression_ratio"] = float(np.mean(compression_values)) if compression_values else None
+            representative["std_compression_ratio"] = float(np.mean(std_values)) if std_values else 0.0
+            representative["throughput_mbps"] = float(np.mean(throughput_values)) if throughput_values else None
+            dataset_rows.append(representative)
+
+        full_label = "entropy+repetition+rle_ratio"
+        full_row = next((row for row in dataset_rows if str(row.get("feature_set_label")) == full_label), None)
+        full_ratio = _compression_ratio(full_row) if full_row is not None else None
+
+        for row in dataset_rows:
+            if full_ratio is not None:
+                row["delta_vs_full_features"] = float(_compression_ratio(row) - full_ratio)
+            else:
+                row["delta_vs_full_features"] = None
+            row["is_best"] = False
+
+        dataset_rows.sort(key=_compression_ratio)
+        for idx, row in enumerate(dataset_rows, start=1):
+            row["rank"] = idx
+            row["is_best"] = idx == 1
+
+        output_rows[dataset_name] = dataset_rows
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as out_f:
-        out_f.write(json.dumps(sorted_rows, indent=2))
+        out_f.write(json.dumps(output_rows, indent=2))
 
 
 def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
