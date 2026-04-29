@@ -182,24 +182,15 @@ def estimate_convergence_block(
     if not regret_curve:
         return -1
 
-    if skip_blocks < 0:
-        skip_blocks = 0
-
-    if skip_blocks >= len(regret_curve):
-        return -1
-
-    curve = regret_curve[skip_blocks:]
-
     if window <= 1 or len(regret_curve) < window:
         return -1
 
-    y = np.array(curve, dtype=float)
     x = np.arange(window, dtype=float)
-
-    for start in range(0, len(y) - window + 1):
-        segment = y[start : start + window]
-        slope = float(np.polyfit(x, segment, 1)[0])
-        if slope < threshold:
-            return skip_blocks + start + window - 1
-
+    
+    for i in range(window, len(regret_curve)):
+        segment = regret_curve[i - window : i]
+        slope = np.polyfit(x, segment, 1)[0]
+        if abs(slope) < threshold:
+            return i
+    
     return -1
