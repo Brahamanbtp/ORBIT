@@ -204,6 +204,7 @@ def run_repeated_experiment(input_path: str, config: ORBITConfig, output_dir: st
     return agg
 import os
 import json
+import re
 from orbit_codecs import CODEC_REGISTRY
 from orbit_codecs.base import CodecAdapter
 from bandit.reward import compute_reward
@@ -249,19 +250,23 @@ def run_experiment(input_path: str, config: ORBITConfig, output_dir: str) -> dic
         random.seed(config.random_seed)
 
     # --- Write reproducibility_manifest.json before pipeline runs ---
-    # ORBIT version from pyproject.toml
-    orbit_version = "0.1.0"
+    # ORBIT version from pyproject.toml using regex
+    orbit_version = "unknown"
     try:
-        try:
-            import tomllib
-        except ImportError:
-            import tomli as tomllib
-
-        with open(os.path.join(os.path.dirname(__file__), "..", "pyproject.toml"), "rb") as f:
-            data = tomllib.load(f)
-        orbit_version = data.get("project", {}).get("version", "0.1.0")
+        # Walk up from current file to find pyproject.toml
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        while current_dir != os.path.dirname(current_dir):  # Stop at root
+            pyproject_path = os.path.join(current_dir, "pyproject.toml")
+            if os.path.exists(pyproject_path):
+                with open(pyproject_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                match = re.search(r'version\s*=\s*"([^"]+)"', content)
+                if match:
+                    orbit_version = match.group(1)
+                break
+            current_dir = os.path.dirname(current_dir)
     except Exception:
-        orbit_version = "0.1.0"
+        pass
 
     # Codec library versions
     def get_version_safe(pkg):
@@ -797,7 +802,13 @@ def run_block_size_sweep(
             try:
                 with open(aggregated_regret_path, "r", encoding="utf-8") as f:
                     aggregated_regret = json.load(f)
-                if isinstance(aggregated_regret, list):
+                # Try to extract y_mean field (dict structure)
+                if isinstance(aggregated_regret, dict) and "y_mean" in aggregated_regret:
+                    y_mean = aggregated_regret.get("y_mean", [])
+                    if isinstance(y_mean, list):
+                        regret_curve = [float(v) for v in y_mean]
+                # Fallback: if aggregated_regret is a list of records
+                elif isinstance(aggregated_regret, list):
                     regret_curve = [float(entry.get("mean_normalized_regret", 0.0)) for entry in aggregated_regret if isinstance(entry, dict)]
             except Exception:
                 regret_curve = []
@@ -809,10 +820,11 @@ def run_block_size_sweep(
         )
         regret_convergence_block = int(convergence_idx) if convergence_idx >= 0 else -1
 
+        ratio_float = float(ratio) if ratio is not None else 0.0
         row = {
             "block_size": int(block_size),
-            "compression_ratio": float(ratio) if ratio is not None else 0.0,
-            "mean_compression_ratio": float(ratio) if ratio is not None else 0.0,
+            "mean_compression_ratio": ratio_float,
+            "compression_ratio": ratio_float,
             "throughput_mbps": float(throughput_mbps(input_bytes * 3, elapsed_ms)),
             "regret_convergence_block": regret_convergence_block,
         }
@@ -963,17 +975,17 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
     """
     Prepare ablation table from ablation_results.json.
     Normalizes either a flat list or a dict-of-lists, then ranks rows per dataset_name.
+    Outputs a JSON array sorted by compression_ratio descending.
     """
     with open(ablation_path, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    if isinstance(data, dict):
-        rows = [r for v in data.values() for r in v]
-    else:
-        rows = data
+    # Validate input structure
+    assert isinstance(data, list), f"Expected list, got {type(data)}"
+    assert len(data) > 0, "Empty ablation results"
+    assert isinstance(data[0], dict), f"Expected dict rows, got {type(data[0])}"
 
-    if not isinstance(rows, list):
-        raise ValueError("ablation_results.json must contain a list or dict of lists")
+    rows = data
 
     normalized_rows: list[dict] = []
     for idx, item in enumerate(rows):
@@ -1044,16 +1056,24 @@ def prepare_ablation_table(ablation_path: str, output_path: str) -> None:
                 row["delta_vs_full_features"] = None
             row["is_best"] = False
 
-        dataset_rows.sort(key=_compression_ratio)
+        dataset_rows.sort(key=_compression_ratio, reverse=True)
         for idx, row in enumerate(dataset_rows, start=1):
             row["rank"] = idx
             row["is_best"] = idx == 1
 
         output_rows[dataset_name] = dataset_rows
 
+    final_rows = [row for rows_list in output_rows.values() for row in rows_list] if isinstance(output_rows, dict) else output_rows
+    assert isinstance(final_rows, list), f"ablation_table output must be a list, got {type(final_rows)}"
+    if final_rows:
+        assert isinstance(final_rows[0], dict), f"ablation_table[0] must be a dict, got {type(final_rows[0])}"
+
+    # Sort final output by compression_ratio descending
+    final_rows.sort(key=lambda r: float(_compression_ratio(r)), reverse=True)
+
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as out_f:
-        out_f.write(json.dumps(output_rows, indent=2))
+        out_f.write(json.dumps(final_rows, indent=2))
 
 
 def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
@@ -1080,7 +1100,9 @@ def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
 
     for row in sorted_rows:
         block_size = int(row.get("block_size", 0))
-        ratio = row.get("compression_ratio")
+        ratio = row.get("mean_compression_ratio")
+        if ratio is None:
+            ratio = row.get("compression_ratio")
         if ratio is None:
             ratio = row.get("compression_ratio_mean", 0.0)
         throughput = row.get("throughput_mbps", 0.0)
@@ -1096,9 +1118,11 @@ def prepare_block_size_plot_data(sweep_path: str, output_path: str) -> None:
         best_row = max(
             sorted_rows,
             key=lambda row: float(
-                row.get("compression_ratio")
-                if row.get("compression_ratio") is not None
-                else row.get("compression_ratio_mean", float("-inf"))
+                row.get("mean_compression_ratio")
+                if row.get("mean_compression_ratio") is not None
+                else (row.get("compression_ratio")
+                      if row.get("compression_ratio") is not None
+                      else row.get("compression_ratio_mean", float("-inf")))
             ),
         )
         optimal_block_size = int(best_row.get("block_size", -1))
