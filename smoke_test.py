@@ -4,10 +4,10 @@ from __future__ import annotations
 def main() -> None:
     # 1) codecs registry and validation import
     try:
-        from orbit_codecs import CODEC_REGISTRY, validate_all_codecs
+        from orbit_codecs import available_codecs
 
-        codec_names = [type(codec).__name__ for _, codec in sorted(CODEC_REGISTRY.items())]
-        print(f"PASS 1: codecs imported; codec names found: {codec_names}")
+        codec_names = available_codecs()
+        print(f"PASS 1: codec names found: {codec_names}")
     except Exception as exc:
         print(f"FAIL 1: codecs import/check failed: {exc}")
 
