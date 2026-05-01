@@ -1,0 +1,9 @@
+# ORBIT: Core dependencies
+numpy>=1.24.0  # Numerical arrays and vectorized computation
+pyyaml>=6.0  # YAML configuration loading
+zstandard>=0.20.0  # Zstd codec bindings for compression experiments
+lz4>=4.0.0  # LZ4 codec bindings for compression experiments
+
+# Optional / development
+matplotlib>=3.7.0  # Evaluation plots and visualizations
+pytest>=7.0.0  # Test runner for the project test suite
