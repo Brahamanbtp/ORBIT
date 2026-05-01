@@ -1,0 +1,59 @@
+# ORBIT ignore rules
+# Python artifacts, virtual environments, IDE settings, research data, generated outputs, notebooks, and test/coverage caches.
+
+# Python bytecode and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+ENV/
+.conda/
+
+# IDE and OS files
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Research and data files
+data/
+datasets/
+*.bin
+*.csv
+/tmp/
+corpus/
+
+# Generated outputs and logs
+outputs/
+logs/
+*.log
+*.jsonl
+
+# Jupyter notebooks
+.ipynb_checkpoints/
+*.ipynb
+
+# Pytest, coverage, and tox
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Scientific and NumPy artifacts
+*.npy
+*.npz
+*.pkl
+*.pickle
