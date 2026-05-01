@@ -1,0 +1,24 @@
+{
+  "_description": "Template for reproducibility manifests. Actual manifests are generated at runtime and should populate these fields with live environment values.",
+  "config": {
+    "block_size": 4096,
+    "n_actions": 4,
+    "alpha": 1.0,
+    "feature_dim": 3,
+    "random_seed": 42
+  },
+  "orbit_version": "0.1.0",
+  "codec_snapshot": "<sha256-hash-generated-at-runtime>",
+  "codec_versions": {
+    "lz4": "<version>",
+    "zstd": "<version>",
+    "lzma": "<stdlib-version>"
+  },
+  "numpy_version": "<version>",
+  "python_version": "<version>",
+  "dataset_path": "<path-to-corpus>",
+  "dataset_size_bytes": 0,
+  "timestamp": "<ISO-8601-timestamp>",
+  "random_seed": 42,
+  "platform": "<os-and-cpu-info>"
+}
