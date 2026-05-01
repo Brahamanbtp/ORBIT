@@ -1,0 +1,13 @@
+# Exclude generated data and experiment outputs from the Docker build context.
+data/
+outputs/
+
+# Keep the image context lean.
+.git/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
