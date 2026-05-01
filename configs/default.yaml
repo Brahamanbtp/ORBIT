@@ -1,5 +1,27 @@
+# Block processing
+# block_size: number of bytes per input block processed by ORBIT.
 block_size: 4096
+# n_actions: number of codec actions available to the bandit.
 n_actions: 4
+
+# Bandit settings
+# alpha: exploration strength for LinUCB.
 alpha: 1.0
+# feature_dim: dimensionality of the block feature vector.
 feature_dim: 3
+# random_seed: seed for reproducible experiments.
 random_seed: 42
+
+# Reward settings
+# reward_ratio_weight: weight assigned to compression ratio in the reward.
+reward_ratio_weight: 0.8
+# reward_speed_weight: weight assigned to throughput/speed in the reward.
+reward_speed_weight: 0.2
+
+# Evaluation settings
+# burn_in_blocks: number of initial blocks used for burn-in before evaluation.
+burn_in_blocks: 20
+# convergence_threshold: slope threshold used when detecting convergence.
+convergence_threshold: 0.001
+# convergence_window: rolling window size for convergence estimation.
+convergence_window: 50
