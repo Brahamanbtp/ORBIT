@@ -1,17 +1,18 @@
+# WARNING: Update dataset paths to actual file locations before running experiments.
 - name: mixed_corpus
-  path: /workspaces/ORBIT/data/mixed_corpus.bin
-  size_bytes: 20485760
+  path: data/mixed_corpus.bin
+  size_bytes: 20971520
   content_type: mixed
-  description: Mixed binary and text corpus interleaved in 512KB chunks
+  description: "Interleaved text and binary corpus for primary evaluation"
 
 - name: text_corpus
-  path: /workspaces/ORBIT/data/text_corpus.txt
-  size_bytes: 10000000
+  path: data/text_corpus.txt
+  size_bytes: 10485760
   content_type: text
-  description: Text-only corpus ASCII characters
+  description: "Natural language text corpus"
 
 - name: binary_corpus
-  path: /workspaces/ORBIT/data/binary_corpus.bin
+  path: data/binary_corpus.bin
   size_bytes: 10485760
   content_type: binary
-  description: Random binary corpus
+  description: "High-entropy and structured binary corpus"
