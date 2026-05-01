@@ -5,4 +5,23 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "orbit"
 version = "0.1.0"
+description = "Online Routing of Blocks via Incremental Contextual Bandit-Guided Compression"
 requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+	{name = "Pranay Sharma", email = "pranay.sharma@example.com"},
+	{name = "Lekshmi Kalinathan", email = "lekshmi.kalinathan@example.com"},
+]
+dependencies = [
+	"lz4>=4.0.0",
+	"numpy>=1.24.0",
+	"pyyaml>=6.0",
+	"zstandard>=0.20.0",
+]
+
+[project.urls]
+Homepage = "https://example.com/orbit"
+Repository = "https://example.com/orbit.git"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
